@@ -1,0 +1,99 @@
+# Search-R1 全量训练配置（本地检索版）
+# 说明：该配置与当前 full_train.yaml 的训练参数保持一致，仅把检索后端切换为 local。
+# 使用方式：
+#   CONFIG_FILE=/mnt/workspace/jkh/slime/examples/search-r1/configs/full_train_local.yaml \
+#   bash /mnt/workspace/jkh/slime/examples/search-r1/run_qwen2.5_3B_google_grpo_jkh.sh
+
+# ===== 检索后端 =====
+SEARCH_BACKEND: "local"
+LOCAL_SEARCH_URL: "http://127.0.0.1:8000/retrieve"
+LOCAL_SEARCH_PROXY: ""
+# local backend 不需要该 key，保留为空即可。
+SEARCH_R1_SERPER_API_KEY: ""
+
+# ===== W&B =====
+WANDB_PROJECT: "search-r1"
+
+# ===== 路径 =====
+BASE_DIR: "/mnt/workspace/jkh"
+SLIME_DIR: "/mnt/workspace/jkh/slime"
+MEGATRON_DIR: "/mnt/workspace/jkh/Megatron-LM"
+MODEL_DIR: "/mnt/workspace/jkh/model/Qwen3-4B"
+SEARCH_R1_DIR: "/mnt/workspace/jkh/slime/examples/search-r1"
+DATA_DIR: "/mnt/workspace/jkh/slime/examples/search-r1/data"
+TRAIN_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/train_97.parquet"
+TEST_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/test_3.parquet"
+
+# ===== GPU / 显存 =====
+NUM_GPUS: 8
+ROLLOUT_NUM_GPUS: 8
+ROLLOUT_NUM_GPUS_PER_ENGINE: 1
+TENSOR_MODEL_PARALLEL_SIZE: 1
+MIN_FREE_MEM_MB: 60000
+MAX_TOKENS_PER_GPU: 6144
+SGLANG_MEM_FRAC: 0.32
+
+# ===== 训练步数 / 采样 =====
+NUM_ROLLOUT: 1200
+NUM_EPOCH: 1
+ROLLOUT_BATCH_SIZE: 8
+N_SAMPLES_PER_PROMPT: 4
+GLOBAL_BATCH_SIZE: 32
+ROLLOUT_MAX_RESPONSE_LEN: 512
+ROLLOUT_TEMPERATURE: 1.0
+
+# ===== 评估 / 保存 =====
+SAVE_INTERVAL: 100
+EVAL_INTERVAL: 25
+SKIP_EVAL_BEFORE_TRAIN: 1
+N_SAMPLES_PER_EVAL_PROMPT: 1
+EVAL_TOP_K: 1
+
+# ===== GRPO / KL =====
+ADVANTAGE_ESTIMATOR: "grpo"
+ENTROPY_COEF: 0.001
+EPS_CLIP: 0.2
+EPS_CLIP_HIGH: 0.28
+KL_COEF: 0.02
+USE_KL_LOSS: 0
+KL_LOSS_COEF: 0.0
+KL_LOSS_TYPE: "k1"
+USE_UNBIASED_KL: 0
+GAMMA: 1.0
+LAMBDA: 1.0
+NORMALIZE_ADVANTAGES: 1
+GRPO_STD_NORMALIZATION: 1
+REWARDS_NORMALIZATION: 1
+USE_ROLLOUT_LOGPROBS: 0
+RESET_OPTIMIZER_STATES: 0
+USE_TIS: 0
+TIS_CLIP: 2.0
+TIS_CLIP_LOW: 0.0
+
+# ===== 优化器 =====
+OPTIMIZER: "adam"
+LR: 1.0e-6
+LR_DECAY_STYLE: "constant"
+WEIGHT_DECAY: 0.01
+ADAM_BETA1: 0.9
+ADAM_BETA2: 0.98
+CLIP_GRAD: 1.0
+
+# ===== 搜索行为 =====
+SEARCH_CONCURRENCY: 4
+SEARCH_MAX_TURNS: 2
+SEARCH_TOPK: 4
+GOOGLE_SNIPPET_ONLY: 1
+GOOGLE_MIN_INTERVAL: 0.8
+GOOGLE_MAX_RETRIES: 12
+GOOGLE_BACKOFF_BASE: 1.5
+GOOGLE_BACKOFF_CAP: 30
+SEARCH_RETURN_LOGPROB: 1
+
+# ===== 产物导出 =====
+EXPORT_TEST_TRAJ: 1
+TEST_EXPORT_MODE: "all"
+TEST_EXPORT_EVERY_N_EVAL: 1
+
+# ===== 网络 =====
+PROXY_REFRESH_SECS: 300

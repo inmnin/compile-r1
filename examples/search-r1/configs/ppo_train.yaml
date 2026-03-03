@@ -1,0 +1,179 @@
+# Search-R1 全量训练配置（Google Search + PPO，Qwen2.5-3B）
+# 启动方式：
+#   CONFIG_FILE=/mnt/workspace/jkh/slime/examples/search-r1/configs/ppo_train.yaml \
+#   bash /mnt/workspace/jkh/slime/examples/search-r1/run_qwen2.5_3B_google_ppo_jkh.sh
+#
+# 说明：
+# - rollout 逻辑与 GRPO 脚本完全一致（同一个 generate_with_search.generate + reward_func）。
+# - PPO 会自动启用 critic（advantage_estimator=ppo）。
+# - 本文件将 PPO 相关参数全部显式化，方便你集中管理。 
+
+# ===== 必填密钥 =====
+SEARCH_R1_SERPER_API_KEY: "0ec804b592087df08dc3a0d98ac5cbb67ad549db"
+
+# ===== W&B =====
+WANDB_PROJECT: "search-r1"
+WANDB_MODE: "online"
+# WANDB_GROUP: "search-r1-ppo"
+# WANDB_KEY: "<your_wandb_key>"
+# EXP_NAME: "search-r1-ppo-google-$(date +%Y%m%d-%H%M%S)"
+
+# ===== 路径 =====
+BASE_DIR: "/mnt/workspace/jkh"
+SLIME_DIR: "/mnt/workspace/jkh/slime"
+MEGATRON_DIR: "/mnt/workspace/jkh/Megatron-LM"
+MODEL_DIR: "/mnt/workspace/jkh/model/Qwen2.5-3B"
+SEARCH_R1_DIR: "/mnt/workspace/jkh/slime/examples/search-r1"
+DATA_DIR: "/mnt/workspace/jkh/slime/examples/search-r1/data"
+TRAIN_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/train_97.parquet"
+TEST_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/test_3.parquet"
+
+# ===== 集群 / 并行 =====
+# 可见 GPU 数（单机）。
+NUM_GPUS: 8
+# actor 训练并行。
+ACTOR_NUM_NODES: 1
+ACTOR_NUM_GPUS_PER_NODE: 8
+# rollout 并行。
+ROLLOUT_NUM_GPUS: 8
+ROLLOUT_NUM_GPUS_PER_ENGINE: 1
+# critic 并行（可留空，留空则默认跟 actor 一致）。
+CRITIC_NUM_NODES: ""
+CRITIC_NUM_GPUS_PER_NODE: ""
+
+# 自动选卡最小空闲显存阈值（MB）。
+MIN_FREE_MEM_MB: 60000
+# 训练并行相关。
+TENSOR_MODEL_PARALLEL_SIZE: 1
+MODEL_NUM_QUERY_GROUPS: 2
+MAX_TOKENS_PER_GPU: 6144
+SGLANG_MEM_FRAC: 0.32
+
+# ===== rollout / 训练步数 =====
+# NUM_EPOCH 非空时优先按 epoch 计算步数。
+NUM_EPOCH: 1
+NUM_ROLLOUT: 1200
+ROLLOUT_BATCH_SIZE: 8
+N_SAMPLES_PER_PROMPT: 4
+GLOBAL_BATCH_SIZE: 32
+ROLLOUT_MAX_RESPONSE_LEN: 512
+ROLLOUT_TEMPERATURE: 1.0
+
+# ===== 保存 / 评估 =====
+SAVE_INTERVAL: 100
+EVAL_INTERVAL: 25
+SKIP_EVAL_BEFORE_TRAIN: 1
+N_SAMPLES_PER_EVAL_PROMPT: 1
+EVAL_TOP_K: 1
+
+# ===== PPO 核心（策略端） =====
+# 必须为 ppo，框架据此自动启用 critic。
+ADVANTAGE_ESTIMATOR: "ppo"
+# policy loss 类型，可选: policy_loss / sft_loss / custom_loss。
+LOSS_TYPE: "policy_loss"
+# 当 LOSS_TYPE=custom_loss 时填写 "python.path:function_name"。
+CUSTOM_LOSS_FUNCTION_PATH: ""
+# 是否计算优势和回报（PPO 通常应保持开启）。
+COMPUTE_ADVANTAGES_AND_RETURNS: 1
+# 策略熵系数（鼓励探索）。
+ENTROPY_COEF: 0.001
+# PPO clipping（policy）。
+EPS_CLIP: 0.2
+EPS_CLIP_HIGH: 0.28
+# Dual-clip PPO 的下界（可选，不启用时留空）。
+EPS_CLIP_C: ""
+# KL reward shaping。
+KL_COEF: 0.02
+# KL loss 路径（与 KL_COEF 不能同时非 0）。
+USE_KL_LOSS: 0
+KL_LOSS_COEF: 0.0
+KL_LOSS_TYPE: "k1"
+USE_UNBIASED_KL: 0
+# GAE。
+GAMMA: 1.0
+LAMBDA: 1.0
+# advantage 标准化。
+NORMALIZE_ADVANTAGES: 1
+# 对 GRPO 生效；PPO 保留该项仅为统一配置接口。
+GRPO_STD_NORMALIZATION: 1
+# reward 标准化（PPO 也可用）。
+REWARDS_NORMALIZATION: 1
+
+# ===== PPO 核心（critic 端） =====
+# critic value clipping（value loss）。
+VALUE_CLIP: 0.2
+# 前多少步只训练 critic。
+NUM_CRITIC_ONLY_STEPS: 0
+# critic checkpoint（可留空：默认跟 actor 路径逻辑一致）。
+CRITIC_LOAD: ""
+CRITIC_SAVE: ""
+# critic 学习率（留空则与 LR 相同）。
+CRITIC_LR: ""
+# critic lr warmup steps。
+CRITIC_LR_WARMUP_ITERS: 0
+
+# ===== 参考模型 / 额外稳定项 =====
+# ref 模型更新间隔（rollout step），留空表示不更新 ref。
+REF_UPDATE_INTERVAL: ""
+# 指定 ref checkpoint 的 step（一般留空）。
+REF_CKPT_STEP: ""
+# 是否使用 rollout 侧 logprob 做 IS 比率。
+USE_ROLLOUT_LOGPROBS: 0
+# 是否计算 rollout entropy（用于部分特殊 mask/分析）。
+USE_ROLLOUT_ENTROPY: 0
+# 是否每个 rollout 重置优化器状态。
+RESET_OPTIMIZER_STATES: 0
+
+# ===== TIS / mismatch / OPSM（可选高级功能） =====
+USE_TIS: 0
+TIS_CLIP: 2.0
+TIS_CLIP_LOW: 0.0
+GET_MISMATCH_METRICS: 0
+CUSTOM_TIS_FUNCTION_PATH: ""
+CUSTOM_PG_LOSS_REDUCER_FUNCTION_PATH: ""
+USE_ROUTING_REPLAY: 0
+USE_ROLLOUT_ROUTING_REPLAY: 0
+USE_OPSM: 0
+OPSM_DELTA: 1.0e-4
+
+# ===== OPD（可选，与 PPO 可叠加） =====
+# 开启后会在优势上叠加蒸馏 KL 项。
+USE_OPD: 0
+# 可选: sglang / megatron；仅 USE_OPD=1 时生效。
+OPD_TYPE: ""
+OPD_KL_COEF: 1.0
+# 仅 OPD_TYPE=megatron 时需要 teacher ckpt。
+OPD_TEACHER_LOAD: ""
+OPD_TEACHER_CKPT_STEP: ""
+
+# ===== 优化器 =====
+OPTIMIZER: "adam"
+LR: 1.0e-6
+LR_DECAY_STYLE: "constant"
+WEIGHT_DECAY: 0.01
+ADAM_BETA1: 0.9
+ADAM_BETA2: 0.98
+CLIP_GRAD: 1.0
+
+# ===== 搜索后端（与 GRPO 相同 rollout 工具调用） =====
+SEARCH_BACKEND: "google"
+LOCAL_SEARCH_URL: "http://127.0.0.1:8000/retrieve"
+LOCAL_SEARCH_PROXY: ""
+
+SEARCH_CONCURRENCY: 4
+SEARCH_MAX_TURNS: 2
+SEARCH_TOPK: 4
+GOOGLE_SNIPPET_ONLY: 1
+GOOGLE_MIN_INTERVAL: 0.8
+GOOGLE_MAX_RETRIES: 12
+GOOGLE_BACKOFF_BASE: 1.5
+GOOGLE_BACKOFF_CAP: 30
+SEARCH_RETURN_LOGPROB: 1
+
+# ===== 导出 =====
+EXPORT_TEST_TRAJ: 1
+TEST_EXPORT_MODE: "all"
+TEST_EXPORT_EVERY_N_EVAL: 1
+
+# ===== 网络 =====
+PROXY_REFRESH_SECS: 300

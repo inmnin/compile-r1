@@ -22,13 +22,7 @@ __all__ = ["Dataset"]
 logger = logging.getLogger(__name__)
 
 
-def read_file(path):
-    path, row_slice = _parse_generalized_path(path)
-    reader = None
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Prompt dataset path '{path}' does not exist.")
-
+def _iter_records_from_single_file(path: str):
     if path.endswith(".jsonl"):
 
         def jsonl_reader(p):
@@ -43,25 +37,54 @@ def read_file(path):
                         print(f"JSON decode error at line {line_num}: {e}")
                         continue
 
-        reader = jsonl_reader(path)
+        yield from jsonl_reader(path)
+        return
 
-    elif path.endswith(".parquet"):
+    if path.endswith(".parquet"):
         if pq is None:
             raise ImportError("pyarrow is required for parquet support")
 
-        def parquet_reader(p):
-            pf = pq.ParquetFile(p)
+        pf = pq.ParquetFile(path)
+        for batch in pf.iter_batches():
+            yield from batch.to_pylist()
+        return
 
-            for batch in pf.iter_batches():
-                yield from batch.to_pylist()
+    raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
 
-        reader = parquet_reader(path)
 
-    else:
-        raise ValueError(f"Unsupported file format: {path}. Supported formats are .jsonl and .parquet.")
+def _list_supported_files(path: str) -> list[str]:
+    if os.path.isfile(path):
+        return [path]
+
+    if os.path.isdir(path):
+        files: list[str] = []
+        for root, dirs, filenames in os.walk(path):
+            # Skip hidden/cache dirs to avoid duplicate or transient files.
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for filename in filenames:
+                if filename.endswith(".jsonl") or filename.endswith(".parquet"):
+                    files.append(os.path.join(root, filename))
+        return sorted(files)
+
+    return []
+
+
+def read_file(path):
+    path, row_slice = _parse_generalized_path(path)
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Prompt dataset path '{path}' does not exist.")
+
+    files = _list_supported_files(path)
+    if not files:
+        raise ValueError(
+            f"No supported dataset files found in '{path}'. "
+            "Expected .jsonl or .parquet file(s), or a directory containing them."
+        )
+
+    reader = itertools.chain.from_iterable(_iter_records_from_single_file(file_path) for file_path in files)
 
     if row_slice is not None:
-
         logger.info("read_file path=%s applying slice row_slice=%s", path, row_slice)
         reader = itertools.islice(reader, row_slice.start, row_slice.stop, row_slice.step)
 

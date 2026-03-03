@@ -1,0 +1,180 @@
+# Search-R1 全量训练配置（Google Search + GRPO）
+# 启动方式：
+#   CONFIG_FILE=/mnt/workspace/jkh/slime/examples/search-r1/configs/full_train.yaml \
+#   bash /mnt/workspace/jkh/slime/examples/search-r1/run_qwen2.5_3B_google_grpo_jkh.sh
+#
+# 步数规则：
+# 1) 若 NUM_EPOCH 非空，脚本传 --num-epoch，忽略 NUM_ROLLOUT。
+# 2) 否则传 --num-rollout=NUM_ROLLOUT。
+# 3) 约 1 个 epoch 的 step 数 ≈ 数据条数 / ROLLOUT_BATCH_SIZE。
+#
+# 保存/评估规则：
+# - SAVE_INTERVAL：每隔多少个 rollout step 存 ckpt。
+# - EVAL_INTERVAL：每隔多少个 rollout step 跑 eval。
+# - EXPORT_TEST_TRAJ + TEST_EXPORT_*：控制导出 test_xxx.jsonl 的频率。
+
+# ===== 必填密钥 =====
+# Google 搜索（Serper）API key；不影响显存，但会影响搜索可用性与训练稳定性。
+SEARCH_R1_SERPER_API_KEY: "0ec804b592087df08dc3a0d98ac5cbb67ad549db"
+
+# ===== 可选：W&B =====
+# 可选：也可用本机 wandb login，不写这里。
+# WANDB_KEY: "e5780f752ed310ff6307"
+WANDB_PROJECT: "search-r1"
+
+# ===== 可选：实验名 =====
+# 不填则脚本自动使用时间戳后缀。
+# EXP_NAME: "search-r1-full-$(date +%Y%m%d-%H%M%S)"
+
+# ===== 路径 =====
+# 工作目录根路径。
+BASE_DIR: "/mnt/workspace/jkh"
+# slime 仓库路径。
+SLIME_DIR: "/mnt/workspace/jkh/slime"
+# Megatron-LM 路径。
+MEGATRON_DIR: "/mnt/workspace/jkh/Megatron-LM"
+# 初始模型路径（HF 格式）。
+MODEL_DIR: "/mnt/workspace/jkh/model/Qwen3-4B"
+# search-r1 示例路径。
+SEARCH_R1_DIR: "/mnt/workspace/jkh/slime/examples/search-r1"
+# 数据目录。
+DATA_DIR: "/mnt/workspace/jkh/slime/examples/search-r1/data"
+# 训练集路径（97%）。
+TRAIN_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/train_97.parquet"
+# 测试集路径（3%）。
+TEST_PARQUET: "/mnt/workspace/jkh/slime/examples/search-r1/data/test_3.parquet"
+
+# ===== GPU / 显存相关 =====
+# 训练可见 GPU 数。8xA100-80G 空闲时建议拉满。
+NUM_GPUS: 8
+# rollout 使用的 GPU 数。与训练同配 8，提高 rollout 吞吐。
+ROLLOUT_NUM_GPUS: 8
+# 每个 rollout engine 占用的 GPU 数。增大可降低单卡压力，但会减少并行 engine 数。
+ROLLOUT_NUM_GPUS_PER_ENGINE: 1
+# 训练 TP 大小。3B 模型用 TP=1 可减少通信并提升速度。
+TENSOR_MODEL_PARALLEL_SIZE: 1
+# 自动选卡时的最小空闲显存阈值（MB）。空闲集群下提高阈值更稳。
+MIN_FREE_MEM_MB: 60000
+# 动态 batch 下每卡最大 token 上限。8x80G 下 6144 通常兼顾速度与 OOM 安全。
+MAX_TOKENS_PER_GPU: 6144
+# rollout(sglang) 静态显存占比。提高到 0.32 提升推理吞吐，同时保留安全余量。
+SGLANG_MEM_FRAC: 0.32
+
+# ===== 训练步数 / 采样核心参数 =====
+# 固定 rollout 步数（仅在 NUM_EPOCH 为空时生效）。这里作为后备值。
+NUM_ROLLOUT: 1200
+# 按 epoch 控制训练时使用；设为 1 表示完整 1 个 epoch，通常更稳。
+NUM_EPOCH: 1
+# 每个 rollout step 采多少个 prompt。
+# 越大：单 step 更慢、样本更多；整体显存略增。8 卡下设 8，效率和稳定性更平衡。
+ROLLOUT_BATCH_SIZE: 8
+# 每个 prompt 采样几条候选（GRPO 分组大小）。
+# 越大：奖励排序信号更稳，但 token 开销和时长明显增加。
+N_SAMPLES_PER_PROMPT: 4
+# PPO/GRPO 更新时的 global batch。设为 32（8*4），梯度统计更稳。
+GLOBAL_BATCH_SIZE: 32
+# rollout 最大生成长度。512 可明显降低截断率，同时避免 1000 带来的高开销。
+ROLLOUT_MAX_RESPONSE_LEN: 512
+# rollout 采样温度。1.0 保持探索，配合熵/KL 约束更利于持续提升。
+ROLLOUT_TEMPERATURE: 1.0
+
+# ===== 评估 / 保存频率 =====
+# 每隔多少 step 保存一次 checkpoint。
+SAVE_INTERVAL: 100
+# 每隔多少 step 做一次评估（会额外耗时）。25 更利于观察 reward/acc 趋势。
+EVAL_INTERVAL: 25
+# 1=跳过训练前的 step0 评估；可减少冷启动开销。
+SKIP_EVAL_BEFORE_TRAIN: 1
+# 每个评估样本生成几条答案（通常 1 即可）。
+N_SAMPLES_PER_EVAL_PROMPT: 1
+# eval top-k（通常 1）。
+EVAL_TOP_K: 1
+
+# ===== GRPO / PPO / KL 关键参数 =====
+# 优势估计器。Search-R1 通常用 grpo。
+ADVANTAGE_ESTIMATOR: "grpo"
+# 熵正则系数。小幅开启探索，避免策略过早塌缩。
+ENTROPY_COEF: 0.001
+# PPO clip 下界（核心稳定参数）。
+EPS_CLIP: 0.2
+# PPO clip 上界（可不对称设置）。设大一些通常更激进。
+EPS_CLIP_HIGH: 0.28
+# 奖励整形 KL 系数（reward shaping 路径）。设为 0.02 抑制策略漂移。
+KL_COEF: 0.02
+# 是否启用 KL loss 项（loss 路径）。关闭，避免与 KL_COEF 叠加冲突。
+USE_KL_LOSS: 0
+# KL loss 系数（仅 USE_KL_LOSS=1 时生效）。关闭 KL loss 时保持 0。
+KL_LOSS_COEF: 0.0
+# KL loss 形式：k1/k2/k3/low_var_kl。
+KL_LOSS_TYPE: "k1"
+# 是否启用 unbiased KL 估计。
+USE_UNBIASED_KL: 0
+# GAE gamma（GRPO 下通常保持 1.0）。
+GAMMA: 1.0
+# GAE lambda（GRPO 下通常保持 1.0）。
+LAMBDA: 1.0
+# 是否归一化 advantage（1 开，0 关）。开启可提升训练稳定性。
+NORMALIZE_ADVANTAGES: 1
+# GRPO 标准差归一化（1 开，0 关）。
+# 关掉后训练信号可能更“硬”，但波动通常更大。
+GRPO_STD_NORMALIZATION: 1
+# reward 归一化（1 开，0 关）。
+REWARDS_NORMALIZATION: 1
+# 是否使用 rollout 时返回的 logprob 做 IS 比率。
+USE_ROLLOUT_LOGPROBS: 0
+# 是否每个 rollout 后重置优化器状态（稳定性实验参数，通常关闭）。
+RESET_OPTIMIZER_STATES: 0
+# 是否启用 TIS（离策略修正）；开启后增加计算复杂度。
+USE_TIS: 0
+# TIS 上界裁剪。
+TIS_CLIP: 2.0
+# TIS 下界裁剪。
+TIS_CLIP_LOW: 0.0
+
+# ===== 优化器参数 =====
+# 优化器类型（当前脚本默认 adam）。
+OPTIMIZER: "adam"
+# 学习率。越大收敛更快但不稳定风险更高。
+LR: 1.0e-6
+# 学习率衰减策略（常用 constant）。
+LR_DECAY_STYLE: "constant"
+# 权重衰减。
+WEIGHT_DECAY: 0.01
+# Adam beta1。
+ADAM_BETA1: 0.9
+# Adam beta2。
+ADAM_BETA2: 0.98
+# 梯度裁剪上限。越小越稳但可能抑制有效更新。
+CLIP_GRAD: 1.0
+
+# ===== 搜索行为 / 防止 Too Many Requests(429) =====
+# 并发搜索数（每个进程）。8 卡下提高到 4，兼顾吞吐与限流风险。
+SEARCH_CONCURRENCY: 4
+# 每条样本最多工具调用轮次。越大效果潜力更高，但速度更慢、token 更多。
+SEARCH_MAX_TURNS: 2
+# 每次 search 返回 top-k 文档数。4 比 3 信息更充分，通常有利于 reward/acc。
+SEARCH_TOPK: 4
+# 1=只用 snippet（更快更稳）；0=抓网页正文（更慢，失败面更大）。
+GOOGLE_SNIPPET_ONLY: 1
+# 两次上游 Google 请求最小间隔秒数；在并发提高后设为 0.8 兼顾吞吐与稳态。
+GOOGLE_MIN_INTERVAL: 0.8
+# 遇到 429/5xx 的最大重试次数。
+GOOGLE_MAX_RETRIES: 12
+# 指数退避底数（重试等待递增速度）。
+GOOGLE_BACKOFF_BASE: 1.5
+# 指数退避最大等待上限（秒）。
+GOOGLE_BACKOFF_CAP: 30
+# 是否让 rollout 返回 token logprob（用于部分 GRPO/TIS 指标）。
+SEARCH_RETURN_LOGPROB: 1
+
+# ===== 测试轨迹导出 =====
+# 1=训练后自动导出 test_xxx.jsonl；0=不导出。
+EXPORT_TEST_TRAJ: 1
+# final=只导出最后一次 eval；all=导出所有 eval 点。
+TEST_EXPORT_MODE: "all"
+# TEST_EXPORT_MODE=all 时，每隔多少个 eval 点导出一次。
+TEST_EXPORT_EVERY_N_EVAL: 1
+
+# ===== 网络 / 代理 =====
+# 代理环境变量刷新间隔（秒），用于长任务网络稳定。
+PROXY_REFRESH_SECS: 300

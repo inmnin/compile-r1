@@ -1,0 +1,249 @@
+{
+  "files": [
+    {
+      "source": "examples/search-r1/train_log/search-r1-full-20260222-200512/test_30.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-full-20260222-200512/test_30.sample200.jsonl",
+      "source_bytes": 634474,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1000.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1000.sample200.jsonl",
+      "source_bytes": 659725,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1025.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1025.sample200.jsonl",
+      "source_bytes": 703979,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1100.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1100.sample200.jsonl",
+      "source_bytes": 679098,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1125.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1125.sample200.jsonl",
+      "source_bytes": 518648,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1150.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1150.sample200.jsonl",
+      "source_bytes": 646357,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1175.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1175.sample200.jsonl",
+      "source_bytes": 872746,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1200.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1200.sample200.jsonl",
+      "source_bytes": 939820,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1225.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1225.sample200.jsonl",
+      "source_bytes": 846483,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1250.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1250.sample200.jsonl",
+      "source_bytes": 896788,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1275.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1275.sample200.jsonl",
+      "source_bytes": 623879,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1300.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1300.sample200.jsonl",
+      "source_bytes": 855326,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1325.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1325.sample200.jsonl",
+      "source_bytes": 849654,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1350.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1350.sample200.jsonl",
+      "source_bytes": 819364,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_1375.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_1375.sample200.jsonl",
+      "source_bytes": 875751,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_25.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_25.sample200.jsonl",
+      "source_bytes": 742431,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_375.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_375.sample200.jsonl",
+      "source_bytes": 735229,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_400.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_400.sample200.jsonl",
+      "source_bytes": 743710,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_425.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_425.sample200.jsonl",
+      "source_bytes": 742342,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_475.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_475.sample200.jsonl",
+      "source_bytes": 741550,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_500.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_500.sample200.jsonl",
+      "source_bytes": 739335,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_525.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_525.sample200.jsonl",
+      "source_bytes": 741950,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_575.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_575.sample200.jsonl",
+      "source_bytes": 549289,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_600.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_600.sample200.jsonl",
+      "source_bytes": 751426,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_625.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_625.sample200.jsonl",
+      "source_bytes": 739797,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_650.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_650.sample200.jsonl",
+      "source_bytes": 749488,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_675.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_675.sample200.jsonl",
+      "source_bytes": 746111,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_725.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_725.sample200.jsonl",
+      "source_bytes": 689342,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_75.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_75.sample200.jsonl",
+      "source_bytes": 571365,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_750.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_750.sample200.jsonl",
+      "source_bytes": 551951,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_775.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_775.sample200.jsonl",
+      "source_bytes": 746156,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_925.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_925.sample200.jsonl",
+      "source_bytes": 651847,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_950.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_950.sample200.jsonl",
+      "source_bytes": 654330,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-full-20260223-132739/test_975.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-full-20260223-132739/test_975.sample200.jsonl",
+      "source_bytes": 856328,
+      "source_rows": 360,
+      "sample_rows": 200
+    },
+    {
+      "source": "examples/search-r1/train_log/search-r1-local-precheck-20260223-130833/test_2.jsonl",
+      "sample": "examples/search-r1/data/jsonl_samples/search-r1-local-precheck-20260223-130833/test_2.sample200.jsonl",
+      "source_bytes": 1118457,
+      "source_rows": 360,
+      "sample_rows": 200
+    }
+  ]
+}

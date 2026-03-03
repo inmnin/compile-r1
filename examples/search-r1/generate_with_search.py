@@ -2,6 +2,7 @@
 # This is a unified version supporting both local search and Google search, with optional log probability collection
 
 import asyncio
+import os
 import re
 
 from qa_em_format import compute_score_em
@@ -11,30 +12,47 @@ from slime.utils.http_utils import post
 from slime.utils.types import Sample
 
 # Configuration for Search-R1
+def _env_bool(key: str, default: bool) -> bool:
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(key: str, default: int) -> int:
+    value = os.environ.get(key)
+    return int(value) if value is not None and value != "" else default
+
+
+def _env_float(key: str, default: float) -> float:
+    value = os.environ.get(key)
+    return float(value) if value is not None and value != "" else default
+
+
 SEARCH_R1_CONFIGS = {
     # ============== General Configuration ==============
-    "max_turns": 2,
-    "topk": 3,
-    "search_concurrency": 256,
+    "max_turns": _env_int("SEARCH_R1_MAX_TURNS", 2),
+    "topk": _env_int("SEARCH_R1_TOPK", 3),
+    "search_concurrency": _env_int("SEARCH_R1_SEARCH_CONCURRENCY", 32),
     # ============== Search Backend Selection ==============
-    "search_backend": "local",  # Options: "local" or "google"
+    "search_backend": os.environ.get("SEARCH_R1_SEARCH_BACKEND", "google"),  # Options: "local" or "google"
     # ============== Local Search Configuration ==============
     # (Only used when search_backend="local")
     "local": {
-        "search_url": "http://127.0.0.1:8000/retrieve",  # URL of your local retrieval server
-        "proxy": None,  # Set to your proxy if needed
+        "search_url": os.environ.get("SEARCH_R1_LOCAL_SEARCH_URL", "http://127.0.0.1:8000/retrieve"),
+        "proxy": os.environ.get("SEARCH_R1_LOCAL_PROXY") or None,
     },
     # ============== Google Search Configuration ==============
     # (Only used when search_backend="google")
     "google": {
-        "api_key": "your_api_key_here",  # Replace with your actual API key
-        "snippet_only": True,  # Set to True to only return snippets
-        "proxy": None,  # Set to your proxy if needed
+        "api_key": os.environ.get("SEARCH_R1_SERPER_API_KEY", os.environ.get("SERPER_API_KEY", "")),
+        "snippet_only": _env_bool("SEARCH_R1_GOOGLE_SNIPPET_ONLY", True),
+        "proxy": os.environ.get("SEARCH_R1_GOOGLE_PROXY") or None,
     },
     # ============== Log Probability Collection ==============
-    "return_logprob": True,  # Set to True to collect log probabilities for TIS metrics
+    "return_logprob": _env_bool("SEARCH_R1_RETURN_LOGPROB", True),
     # ============== Reward Model Configuration ==============
-    "format_score": 0.2,
+    "format_score": _env_float("SEARCH_R1_FORMAT_SCORE", 0.2),
 }
 
 
@@ -61,7 +79,7 @@ async def search(query: str) -> str:
     Perform search using either local search engine or Google search.
     The search backend is determined by SEARCH_R1_CONFIGS["search_backend"].
     """
-    backend = SEARCH_R1_CONFIGS["search_backend"]
+    backend = SEARCH_R1_CONFIGS["search_backend"].strip().lower()
 
     if backend == "local":
         from local_search_server import local_search
@@ -77,6 +95,8 @@ async def search(query: str) -> str:
         from google_search_server import google_search
 
         google_config = SEARCH_R1_CONFIGS["google"]
+        if not google_config["api_key"]:
+            raise ValueError("SEARCH_R1_SERPER_API_KEY is empty but search backend is set to google.")
         result = await google_search(
             google_config["api_key"],
             query,
@@ -126,8 +146,13 @@ async def execute_predictions(prediction: str) -> str:
 
     if action == "search":
         search_query = content
-        async with SEMAPHORE:
-            search_results = await search(search_query)
+        try:
+            async with SEMAPHORE:
+                search_results = await search(search_query)
+        except Exception as exc:
+            # Keep rollout alive on transient tool failures (e.g. provider throttling).
+            print(f"[search-r1] search failed ({type(exc).__name__}): {exc}", flush=True)
+            search_results = "No search results due to temporary search error."
         next_obs = f"\n\n<information>{search_results.strip()}</information>\n\n"
         done = False
     elif action == "answer":

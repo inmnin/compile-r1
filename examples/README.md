@@ -4,6 +4,7 @@ These examples provide concrete examples to leverage slime in your own RL workfl
 
 ## Directory Structure
 
+- **[compile-r1](./compile-r1)**: Search-R1-style code-generation rollout with a local Python sandbox tool on HumanEval.
 - **[eval_multi_task](./eval_multi_task)**: Example for supporting evaluation multiple tasks with different configs.
 - **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP on a single-turn reasoning task using GRPO on the GEO3K dataset.

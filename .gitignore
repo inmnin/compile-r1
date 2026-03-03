@@ -192,3 +192,7 @@ glm/
 _examples_synced/
 .env
 .DS_Store
+
+# Local large artifacts
+examples/search-r1/train_log/
+examples/compile-r1/data/

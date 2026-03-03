@@ -1,0 +1,216 @@
+# 说明：
+# 1) 这是「W&B 指标阅读指南」配置文件，主要给人看，不会直接改变训练逻辑。
+# 2) 你可以把这里的 metric 名称直接复制到 W&B 的图表或搜索框中。
+# 3) 本项目中，reward 不在 train/* 下，而主要在 rollout/* 和 eval/* 下。
+
+version: 1
+project: "search-r1"
+
+# 三类指标的横轴是分开的，先看清 x 轴再解读曲线：
+# - train/*   对应 train/step（训练更新步）
+# - rollout/* 对应 rollout/step（每次 rollout）
+# - eval/*    对应 eval/step（触发评估时才有点）
+step_axes:
+  train_step: "train/step"
+  rollout_step: "rollout/step"
+  eval_step: "eval/step"
+
+# 你最关心的「reward / loss / 熵 / KL」对应名称如下。
+# 注意：如果 W&B 里搜不到 reward，优先搜 rollout/raw_reward 和 eval/search_r1_test。
+core_metrics:
+  reward_train_raw: "rollout/raw_reward"
+  reward_train_used_for_update: "rollout/rewards"
+  reward_eval: "eval/search_r1_test"
+  loss_total: "train/loss"
+  loss_pg: "train/pg_loss"
+  entropy_proxy: "train/entropy_loss"
+  kl_ppo: "train/ppo_kl"
+  kl_loss_optional: "train/kl_loss"
+
+# 本实验（search-r1）常见指标（可直接在 W&B 添加图表）。
+# 提示：不同配置下可能会多/少一些指标，这是正常的。
+recommended_panels:
+  train:
+    - "train/loss"
+    - "train/pg_loss"
+    - "train/entropy_loss"
+    - "train/ppo_kl"
+    - "train/pg_clipfrac"
+    - "train/grad_norm"
+    - "train/train_rollout_logprob_abs_diff"
+  rollout:
+    - "rollout/raw_reward"
+    - "rollout/rewards"
+    - "rollout/response_lengths"
+    - "rollout/truncated"
+    - "rollout/log_probs"
+    - "rollout/rollout_log_probs"
+    - "rollout/advantages"
+    - "rollout/returns"
+  eval:
+    - "eval/search_r1_test"
+    - "eval/search_r1_test/response_len/mean"
+    - "eval/search_r1_test/response_len/max"
+    - "eval/search_r1_test/repetition_frac"
+    - "eval/search_r1_test/truncated_ratio"
+
+# 曲线解读与「正常/异常」示意：
+reading_guide:
+  reward:
+    train_raw:
+      metric: "rollout/raw_reward"
+      normal_shape: "短期有噪声，但中期均值缓慢上升或至少不持续恶化。"
+      abnormal_shape:
+        - "长期贴近 0 且无波动：常见于奖励过稀疏、格式奖励未命中、工具调用失败率高。"
+        - "前期上升后断崖式下降：常见于学习率过大、KL/clip 配置不稳、搜索质量骤降。"
+      notes:
+        - "这是最直观的训练奖励，优先看它。"
+    train_used:
+      metric: "rollout/rewards"
+      normal_shape: "GRPO 下常因组内归一化而均值接近 0，波动比 raw_reward 更明显。"
+      abnormal_shape:
+        - "几乎恒为 0 且方差极小：可能 n_samples_per_prompt 太小或奖励信号退化。"
+      notes:
+        - "它是参与优势计算的奖励，不等于原始奖励。"
+    eval:
+      metric: "eval/search_r1_test"
+      normal_shape: "随 eval step 缓慢上升或稳定；允许小幅回撤。"
+      abnormal_shape:
+        - "持续下降且无法恢复：通常是真正的泛化退化。"
+        - "剧烈锯齿：评估样本过少或生成随机性过强。"
+
+  loss:
+    total:
+      metric: "train/loss"
+      normal_shape: "缓慢下降或低幅波动。"
+      abnormal_shape:
+        - "突然飙升到极大值/NaN：常见于学习率过大、数值不稳定、梯度爆炸。"
+    pg:
+      metric: "train/pg_loss"
+      normal_shape: "与总 loss 同步变化。"
+      abnormal_shape:
+        - "长期无变化：可能策略几乎不更新（学习率太小、clip 过强、奖励无区分度）。"
+
+  entropy:
+    proxy:
+      metric: "train/entropy_loss"
+      normal_shape: "中后期缓慢下降，表示策略逐步收敛。"
+      abnormal_shape:
+        - "很快塌到接近 0：探索不足，可能过早收敛。"
+        - "持续很高且不降：策略发散或学习率偏大。"
+      notes:
+        - "该值是框架记录的熵相关项（常作为策略熵代理观察）。"
+
+  kl:
+    ppo_kl:
+      metric: "train/ppo_kl"
+      normal_shape: "小幅波动，整体保持较低。"
+      abnormal_shape:
+        - "周期性尖峰很高：策略步子过大（lr 高、clip 高、奖励波动大）。"
+        - "长期接近 0 且 reward 不升：策略更新过弱。"
+    kl_loss:
+      metric: "train/kl_loss"
+      normal_shape: "仅当 USE_KL_LOSS=1 时出现；应与 kl_loss_coef 协同稳定。"
+      abnormal_shape:
+        - "明显持续抬升且 reward 下降：KL 约束过强或目标冲突。"
+
+  stability:
+    grad_norm:
+      metric: "train/grad_norm"
+      normal_shape: "有波动但总体可控。"
+      abnormal_shape:
+        - "频繁尖峰：梯度不稳定，先降 lr 或加强 clip。"
+        - "长期接近 0：更新太弱，可能学不动。"
+    truncation:
+      metric: "rollout/truncated"
+      normal_shape: "中低水平。"
+      abnormal_shape:
+        - "长期偏高（如 >0.6）：生成长度上限偏小或回答过长，影响 reward 与可学性。"
+
+# 你在 W&B 看不到 reward 时，按这个清单排查：
+reward_not_found_checklist:
+  - "在 W&B 搜索框输入：rollout/raw_reward（训练原始奖励）"
+  - "再搜：rollout/rewards（GRPO 归一化后奖励）"
+  - "再搜：eval/search_r1_test（测试集奖励）"
+  - "确认图表 x 轴选择了对应 step（rollout/step 或 eval/step）"
+  - "确认训练确实触发了 eval（EVAL_INTERVAL 生效，且日志有 eval_xx.pt）"
+
+# 当前 Search-R1 示例对「429/Too Many Requests」的关键配置项：
+# 这些值在 full_train.yaml 和启动脚本中会注入运行环境。
+rate_limit_related_metrics:
+  - "SEARCH_CONCURRENCY"
+  - "GOOGLE_MIN_INTERVAL"
+  - "GOOGLE_MAX_RETRIES"
+  - "GOOGLE_BACKOFF_BASE"
+  - "GOOGLE_BACKOFF_CAP"
+
+# 建议的 W&B 面板布局（便于快速判断训练是否正常）：
+# 1) Reward 组：rollout/raw_reward + eval/search_r1_test
+# 2) Policy 组：train/loss + train/pg_loss + train/entropy_loss + train/ppo_kl
+# 3) Stability 组：train/grad_norm + rollout/truncated + rollout/response_lengths
+dashboard_layout_hint:
+  row1: ["rollout/raw_reward", "eval/search_r1_test"]
+  row2: ["train/loss", "train/pg_loss", "train/entropy_loss", "train/ppo_kl"]
+  row3: ["train/grad_norm", "rollout/truncated", "rollout/response_lengths"]
+
+# ===================== PPO 专栏 =====================
+# 说明：
+# - 当 ADVANTAGE_ESTIMATOR=ppo 时，框架会自动启用 critic。
+# - actor 与 critic 的 train 指标会分开记录：
+#   actor:  train/loss, train/pg_loss, ...
+#   critic: train/critic-value_loss, train/critic-value_clipfrac, ...
+# - rollout 侧 reward/advantages/returns 指标与 GRPO 一样在 rollout/* 下。
+ppo_column:
+  required_enable:
+    - "ADVANTAGE_ESTIMATOR=ppo"
+  key_metrics:
+    reward:
+      - "rollout/raw_reward"
+      - "rollout/rewards"
+      - "eval/search_r1_test"
+    advantage_return:
+      - "rollout/advantages"
+      - "rollout/returns"
+    actor_policy:
+      - "train/loss"
+      - "train/pg_loss"
+      - "train/pg_clipfrac"
+      - "train/ppo_kl"
+      - "train/entropy_loss"
+      - "train/grad_norm"
+    critic_value:
+      - "train/critic-value_loss"
+      - "train/critic-value_clipfrac"
+      - "train/critic-grad_norm"
+      - "train/critic-lr-pg_0"
+    optional:
+      - "train/kl_loss"
+      - "train/train_rollout_logprob_abs_diff"
+      - "train/critic-lr-pg_1"
+
+  how_to_read:
+    reward:
+      normal: "rollout/raw_reward 与 eval/search_r1_test 中期缓慢上升，允许短期波动。"
+      abnormal:
+        - "reward 长期贴近 0：奖励函数触发不足或工具调用/格式失败率高。"
+        - "reward 大幅震荡且同时 ppo_kl 尖峰：策略步长过大（lr/clip/KL 需收敛）。"
+    advantage_return:
+      normal: "rollout/advantages 与 rollout/returns 分布有波动但不过度尖峰。"
+      abnormal:
+        - "advantages 长期近 0：学习信号弱，可能需要提高奖励区分度。"
+        - "advantages 出现极端尖峰：通常是 reward/KL 不稳定或采样异常。"
+    actor_policy:
+      normal: "train/loss 与 train/pg_loss 缓慢下降；train/ppo_kl 维持低位波动。"
+      abnormal:
+        - "train/ppo_kl 持续走高并伴随 reward 下滑：策略漂移过快。"
+        - "train/entropy_loss 快速塌陷到很低：探索不足。"
+    critic_value:
+      normal: "train/critic-value_loss 下降或趋稳，value_clipfrac 中低且逐步稳定。"
+      abnormal:
+        - "critic-value_loss 持续上升：critic 学不动（critic_lr/批量/回报尺度需调整）。"
+        - "critic-value_clipfrac 长期接近 1：value_clip 太小或 value 更新过激。"
+
+  recommended_dashboard:
+    row1: ["rollout/raw_reward", "eval/search_r1_test", "rollout/advantages", "rollout/returns"]
+    row2: ["train/loss", "train/pg_loss", "train/ppo_kl", "train/entropy_loss"]
+    row3: ["train/critic-value_loss", "train/critic-value_clipfrac", "train/critic-grad_norm"]

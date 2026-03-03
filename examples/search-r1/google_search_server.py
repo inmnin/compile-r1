@@ -1,7 +1,9 @@
 import asyncio
+import json
 import os
 import random
 import re
+import time
 
 import aiohttp
 import chardet
@@ -92,28 +94,79 @@ def collect_context(snippet: str, doc: str) -> str:
 
 
 async def google_search(api_key, query, top_k=5, timeout: int = 60, proxy=None, snippet_only=False) -> list[dict]:
+    max_retries = int(os.environ.get("SEARCH_R1_GOOGLE_MAX_RETRIES", "8"))
+    backoff_base = float(os.environ.get("SEARCH_R1_GOOGLE_BACKOFF_BASE", "1.5"))
+    backoff_cap = float(os.environ.get("SEARCH_R1_GOOGLE_BACKOFF_CAP", "30.0"))
+    min_interval = float(os.environ.get("SEARCH_R1_GOOGLE_MIN_INTERVAL", "0.4"))
+
+    # Process-local rate limiter: keep a minimum interval between upstream requests.
+    if not hasattr(google_search, "_rate_lock"):
+        google_search._rate_lock = asyncio.Lock()
+        google_search._next_allowed_ts = 0.0
+
+    async def throttle_once() -> None:
+        async with google_search._rate_lock:
+            now = time.monotonic()
+            wait = google_search._next_allowed_ts - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+            google_search._next_allowed_ts = time.monotonic() + min_interval
+
     timeout_obj = aiohttp.ClientTimeout(total=timeout)
     session_kwargs = {}
     if proxy:
         session_kwargs["proxy"] = proxy
     async with aiohttp.ClientSession(**session_kwargs) as session:
-        async with session.post(
-            "https://google.serper.dev/search",
-            json={
-                "q": query,
-                "num": top_k,
-                "gl": "us",
-                "hl": "en",
-            },
-            headers={
-                "Content-Type": "application/json",
-                "X-API-KEY": api_key,
-            },
-            timeout=timeout_obj,
-        ) as resp:
-            resp.raise_for_status()
-            response = await resp.json()
-            items = response.get("organic", [])
+        response = None
+        last_error = None
+        for attempt in range(max_retries):
+            await throttle_once()
+            try:
+                async with session.post(
+                    "https://google.serper.dev/search",
+                    json={
+                        "q": query,
+                        "num": top_k,
+                        "gl": "us",
+                        "hl": "en",
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-API-KEY": api_key,
+                    },
+                    timeout=timeout_obj,
+                ) as resp:
+                    if resp.status in (429, 500, 502, 503, 504):
+                        retry_after = resp.headers.get("Retry-After", "")
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = min(backoff_cap, backoff_base * (2**attempt))
+                        delay += random.uniform(0.0, 0.5)
+                        body = await resp.text()
+                        last_error = RuntimeError(
+                            f"google_search transient HTTP {resp.status}: {body[:200]}"
+                        )
+                        if attempt + 1 < max_retries:
+                            await asyncio.sleep(delay)
+                            continue
+                        raise last_error
+
+                    resp.raise_for_status()
+                    raw = await resp.text()
+                    response = json.loads(raw)
+                    break
+            except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt + 1 >= max_retries:
+                    raise
+                delay = min(backoff_cap, backoff_base * (2**attempt)) + random.uniform(0.0, 0.5)
+                await asyncio.sleep(delay)
+
+        if response is None:
+            raise RuntimeError(f"google_search failed after {max_retries} retries: {last_error}")
+
+        items = response.get("organic", [])
 
     contexts = []
     if snippet_only:
