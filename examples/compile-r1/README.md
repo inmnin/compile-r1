@@ -34,7 +34,37 @@ python examples/compile-r1/prepare_compile_r1_data.py \
   --max-rows 32
 ```
 
-## 2) Run training
+## 2) Generate cold-start trajectories (AceCode -> compile-r1)
+
+This path downloads:
+- train set: `TIGER-Lab/AceCode-87K` into `examples/compile-r1/data/train`
+- test set: `openai/openai_humaneval` into `examples/compile-r1/data/test`
+
+and then distills tool-use trajectories from train samples only.
+
+```bash
+cd /mnt/workspace/jkh/slime
+export JUDGE_SET_3_API_KEY="YOUR_DEEPSEEK_KEY"
+export JUDGE_SET_3_MODEL_NAME="deepseek-chat"
+export JUDGE_SET_3_BASE_URL="https://api.deepseek.com/v1"
+
+python examples/compile-r1/distill_cold_start.py \
+  --data-root examples/compile-r1/data \
+  --max-samples 50 \
+  --shuffle \
+  --auto-start-compile-server \
+  --compile-server-script tools/RunPythonTool.py \
+  --compile-server-url http://127.0.0.1:18080 \
+  --save-failures
+```
+
+Compile server API (for high-throughput local execution):
+- `GET /healthz`
+- `GET /stats`
+- `POST /run`
+- `POST /run_humaneval`
+
+## 3) Run training
 
 ```bash
 cd /mnt/workspace/jkh/slime

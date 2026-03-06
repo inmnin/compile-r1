@@ -1,136 +1,230 @@
-import sys
-import os
-import io
-import re
+import asyncio
 import contextlib
-import traceback
-import logging
+import io
 import inspect
-import pickle
-import types
+import logging
 import multiprocessing
+import os
+import pickle
+import re
+import signal
+import sys
+import threading
+import time
+import traceback
+import types
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
-from typing import Dict, Any
+from concurrent.futures.process import BrokenProcessPool
+from typing import Any, Dict, Optional
 
-# 0. 确保路径正确
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
 current_path = os.getcwd()
 if current_path not in sys.path:
     sys.path.append(current_path)
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Invalid int env %s=%r, fallback=%s", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Invalid float env %s=%r, fallback=%s", name, raw, default)
+        return default
+
+
+def _detect_available_vcpu() -> int:
+    candidates = []
+
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            candidates.append(len(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+
+    try:
+        nproc_output = os.popen("nproc").read().strip()
+        if nproc_output:
+            candidates.append(int(nproc_output))
+    except Exception:
+        pass
+
+    if os.cpu_count():
+        candidates.append(os.cpu_count() or 1)
+
+    positive = [x for x in candidates if isinstance(x, int) and x > 0]
+    if not positive:
+        return 1
+    return min(positive)
+
+
+AVAILABLE_VCPU = _detect_available_vcpu()
+DEFAULT_POOL_WORKERS = max(1, min(32, AVAILABLE_VCPU // 2))
+DEFAULT_TIMEOUT_SECONDS = 15
+DEFAULT_QUEUE_WAIT_SECONDS = 1.0
+DEFAULT_MAX_INFLIGHT = max(DEFAULT_POOL_WORKERS * 3, DEFAULT_POOL_WORKERS + 8)
+DEFAULT_WORKER_MAX_TASKS = 200
+
 
 class CodeExtractor:
     @staticmethod
     def extract(text: str) -> str:
         match = re.search(r"```python\n(.*?)```", text, re.DOTALL)
-        if match: return match.group(1).strip()
+        if match:
+            return match.group(1).strip()
         match_generic = re.search(r"```\n(.*?)```", text, re.DOTALL)
-        if match_generic: return match_generic.group(1).strip()
+        if match_generic:
+            return match_generic.group(1).strip()
         return text.strip()
 
-def _sandbox_worker_task(code_str: str) -> Dict[str, Any]:
+
+class _WallTimeLimitExceeded(Exception):
+    pass
+
+
+def _sandbox_worker_task(code_str: str, wall_timeout: int, auto_invoke: bool) -> Dict[str, Any]:
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
-    
-    # 统一作用域
     sandbox_scope = {"__builtins__": __builtins__}
-    
+
     status = "success"
     result_value = None
     error_message = None
-    
     function_executed = False
+
+    old_handler = None
+    if hasattr(signal, "SIGALRM"):
+
+        def _timeout_handler(_signum, _frame):
+            raise _WallTimeLimitExceeded(f"Execution reached wall timeout ({wall_timeout}s)")
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, max(1, wall_timeout))
 
     try:
         with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
             exec(code_str, sandbox_scope, sandbox_scope)
-            
-            target_func = None
 
-            priority_names = ['main', 'run', 'solution', 'solve', 'execute']
-            for name in priority_names:
-                if name in sandbox_scope and callable(sandbox_scope[name]):
-                    target_func = sandbox_scope[name]
-                    break
+            skipped_functions = []
+            if auto_invoke:
+                target_func = None
+                priority_names = ["main", "run", "solution", "solve", "execute"]
+                for name in priority_names:
+                    if name in sandbox_scope and callable(sandbox_scope[name]):
+                        target_func = sandbox_scope[name]
+                        break
 
-            skipped_functions = [] 
-            if not target_func:
-                candidates = []
-                for name, obj in sandbox_scope.items():
-                    if name.startswith("__") or name == "__builtins__": continue
-                    
-                    if callable(obj):
-                        try:
-                            sig = inspect.signature(obj)
-                            required_params = [
-                                p for p in sig.parameters.values() 
-                                if p.default == inspect.Parameter.empty and 
-                                p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                            ]
-                            if len(required_params) == 0:
-                                candidates.append(obj)
-                            else:
-                                skipped_functions.append(name)
-                        except (ValueError, TypeError):
+                if not target_func:
+                    candidates = []
+                    for name, obj in sandbox_scope.items():
+                        if name.startswith("__") or name == "__builtins__":
                             continue
-                
-                if candidates:
-                    target_func = candidates[-1]
+                        if callable(obj):
+                            try:
+                                sig = inspect.signature(obj)
+                                required_params = [
+                                    p
+                                    for p in sig.parameters.values()
+                                    if p.default == inspect.Parameter.empty
+                                    and p.kind
+                                    in (
+                                        inspect.Parameter.POSITIONAL_ONLY,
+                                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                    )
+                                ]
+                                if len(required_params) == 0:
+                                    candidates.append(obj)
+                                else:
+                                    skipped_functions.append(name)
+                            except (ValueError, TypeError):
+                                continue
+                    if candidates:
+                        target_func = candidates[-1]
 
-            if target_func:
-                try:
-                    result_value = target_func()
-                    function_executed = True
-                except TypeError:
-                    pass
+                if target_func:
+                    try:
+                        result_value = target_func()
+                        function_executed = True
+                    except TypeError:
+                        pass
 
-            if not function_executed or result_value is None:
-                
-                heuristic_vars = ['result', 'ret', 'answer', 'output', 'solution', 'data']
-                found_heuristic = False
-                for var_name in heuristic_vars:
-                    if var_name in sandbox_scope and not callable(sandbox_scope[var_name]):
-                        result_value = sandbox_scope[var_name]
-                        found_heuristic = True
-                        break
-                
-                if not found_heuristic:
-                    keys = list(sandbox_scope.keys())
+                if not function_executed or result_value is None:
+                    heuristic_vars = ["result", "ret", "answer", "output", "solution", "data"]
+                    found_heuristic = False
+                    for var_name in heuristic_vars:
+                        if var_name in sandbox_scope and not callable(sandbox_scope[var_name]):
+                            result_value = sandbox_scope[var_name]
+                            found_heuristic = True
+                            break
 
-                    for key in reversed(keys):
-                        val = sandbox_scope[key]
-                        
-                        if key.startswith("__"): continue
-                        if inspect.ismodule(val): continue
-                        if callable(val): continue
-                        
-                        # 🎉 找到了！这是最后一个被定义的“数据”
-                        result_value = val
-                        break
+                    if not found_heuristic:
+                        keys = list(sandbox_scope.keys())
+                        for key in reversed(keys):
+                            val = sandbox_scope[key]
+                            if key.startswith("__"):
+                                continue
+                            if inspect.ismodule(val):
+                                continue
+                            if callable(val):
+                                continue
+                            result_value = val
+                            break
 
+                if result_value is None and not stdout_capture.getvalue() and skipped_functions and not function_executed:
+                    print(
+                        f"[System Warning]: Code defined functions {skipped_functions} but did not call them. "
+                        f"These functions require arguments, so the sandbox could not auto-execute them. "
+                        f"Please explicitly call the function in your code (e.g., '{skipped_functions[0]}(...)' )."
+                    )
+            else:
+                # In script-only mode we do not auto-call functions, but still surface
+                # explicit `result` payloads produced by harness programs.
+                if "result" in sandbox_scope and not callable(sandbox_scope["result"]):
+                    result_value = sandbox_scope["result"]
 
-            if result_value is None and not stdout_capture.getvalue() and skipped_functions and not function_executed:
-                print(f"[System Warning]: Code defined functions {skipped_functions} but did not call them. "
-                      f"These functions require arguments, so the sandbox could not auto-execute them. "
-                      f"Please explicitly call the function in your code (e.g., '{skipped_functions[0]}(...)' ).")
-
-            # F. 生成器处理
             if isinstance(result_value, types.GeneratorType):
                 result_value = list(result_value)
-            
-            # G. 序列化检查
+
             try:
                 if result_value is not None:
                     pickle.dumps(result_value)
             except (TypeError, pickle.PicklingError):
                 result_value = f"<Unpicklable Object>: {str(result_value)}"
 
-    except SystemExit as e:
+    except _WallTimeLimitExceeded as exc:
+        status = "timeout"
+        error_message = str(exc)
+    except SystemExit as exc:
         status = "error"
-        error_message = f"Program exited with code: {e.code}"
+        error_message = f"Program exited with code: {exc.code}"
     except Exception:
         status = "error"
         error_message = traceback.format_exc()
+    finally:
+        if old_handler is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
 
     output_logs = stdout_capture.getvalue()
     if stderr_capture.getvalue():
@@ -140,82 +234,228 @@ def _sandbox_worker_task(code_str: str) -> Dict[str, Any]:
         "status": status,
         "return_value": result_value,
         "stdout": output_logs.strip(),
-        "error": error_message
+        "error": error_message,
     }
 
 
 class ToolSandbox:
-    _instance = None
-    
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(ToolSandbox, cls).__new__(cls)
-        return cls._instance
+    def __init__(
+        self,
+        max_workers: int = DEFAULT_POOL_WORKERS,
+        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        max_inflight: int = DEFAULT_MAX_INFLIGHT,
+        queue_wait_timeout: float = DEFAULT_QUEUE_WAIT_SECONDS,
+        worker_max_tasks: int = DEFAULT_WORKER_MAX_TASKS,
+    ):
+        self.max_workers = max(1, int(max_workers))
+        self.timeout = max(1, int(timeout))
+        self.max_inflight = max(self.max_workers, int(max_inflight))
+        self.queue_wait_timeout = max(0.0, float(queue_wait_timeout))
+        self.worker_max_tasks = max(1, int(worker_max_tasks))
 
-    def __init__(self, max_workers: int = 2, timeout: int = 15):
-        if not hasattr(self, 'initialized'):
-            self.timeout = timeout
-            try:
-                default_method = "spawn" if sys.platform == "win32" else "fork"
-                start_method = os.environ.get("RUNPY_TOOL_MP_START_METHOD", default_method)
-                ctx = multiprocessing.get_context(start_method)
-                self._executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)
-            except (TypeError, ValueError):
-                self._executor = ProcessPoolExecutor(max_workers=max_workers)
-            self.initialized = True
+        self._executor_lock = threading.Lock()
+        self._metric_lock = threading.Lock()
+        self._slots = asyncio.Semaphore(self.max_inflight)
 
-    def run(self, raw_text: str, extract_code: bool = True, timeout: int | None = None) -> Dict[str, Any]:
-        if extract_code:
-            code = CodeExtractor.extract(raw_text)
-        else:
-            code = raw_text
+        self._executor = self._create_executor()
 
-        if not code.strip():
-            return {"status": "error", "error": "No python code found."}
+        self._total_requests = 0
+        self._success_requests = 0
+        self._busy_requests = 0
+        self._timeout_requests = 0
+        self._error_requests = 0
+        self._pool_restarts = 0
+        self._inflight = 0
+        self._max_inflight_seen = 0
+        self._latency_ms_sum = 0.0
 
+    def _create_executor(self) -> ProcessPoolExecutor:
+        default_method = "spawn" if sys.platform == "win32" else "fork"
+        start_method = os.environ.get("RUNPY_TOOL_MP_START_METHOD", default_method)
         try:
-            future = self._executor.submit(_sandbox_worker_task, code)
-            timeout_value = self.timeout if timeout is None else timeout
-            return future.result(timeout=timeout_value)
+            ctx = multiprocessing.get_context(start_method)
+            try:
+                return ProcessPoolExecutor(
+                    max_workers=self.max_workers,
+                    mp_context=ctx,
+                    max_tasks_per_child=self.worker_max_tasks,
+                )
+            except TypeError:
+                return ProcessPoolExecutor(max_workers=self.max_workers, mp_context=ctx)
+        except (TypeError, ValueError):
+            return ProcessPoolExecutor(max_workers=self.max_workers)
+
+    def _submit(self, code: str, timeout: int, auto_invoke: bool):
+        with self._executor_lock:
+            return self._executor.submit(_sandbox_worker_task, code, timeout, auto_invoke)
+
+    def _restart_pool(self, reason: str) -> None:
+        with self._executor_lock:
+            old_executor = self._executor
+            self._executor = self._create_executor()
+        with self._metric_lock:
+            self._pool_restarts += 1
+        logger.warning("Process pool restarted due to: %s", reason)
+        old_executor.shutdown(wait=False, cancel_futures=True)
+
+    def _record_start(self) -> float:
+        now = time.perf_counter()
+        with self._metric_lock:
+            self._total_requests += 1
+            self._inflight += 1
+            if self._inflight > self._max_inflight_seen:
+                self._max_inflight_seen = self._inflight
+        return now
+
+    def _record_end(self, started: float, status: str) -> None:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        with self._metric_lock:
+            self._inflight = max(0, self._inflight - 1)
+            if status == "success":
+                self._success_requests += 1
+                self._latency_ms_sum += latency_ms
+            elif status == "busy":
+                self._busy_requests += 1
+            elif status == "timeout":
+                self._timeout_requests += 1
+            else:
+                self._error_requests += 1
+
+    async def run_async(
+        self,
+        raw_text: str,
+        extract_code: bool = True,
+        timeout: int | None = None,
+        auto_invoke: bool = True,
+    ) -> Dict[str, Any]:
+        timeout_value = self.timeout if timeout is None else max(1, int(timeout))
+        code = CodeExtractor.extract(raw_text) if extract_code else raw_text
+        if not code.strip():
+            return {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+
+        acquired = False
+        started = time.perf_counter()
+        try:
+            try:
+                await asyncio.wait_for(self._slots.acquire(), timeout=self.queue_wait_timeout)
+                acquired = True
+            except asyncio.TimeoutError:
+                with self._metric_lock:
+                    self._total_requests += 1
+                    self._busy_requests += 1
+                return {
+                    "status": "busy",
+                    "error": "Server is overloaded. Request queue is full, please retry.",
+                    "stdout": "",
+                    "return_value": None,
+                }
+
+            started = self._record_start()
+            future = self._submit(code, timeout_value, auto_invoke)
+            wrapped = asyncio.wrap_future(future)
+            try:
+                result = await asyncio.wait_for(wrapped, timeout=timeout_value + 1)
+                status = str(result.get("status", "success"))
+                self._record_end(started, "success" if status == "success" else status)
+                return result
+            except asyncio.TimeoutError:
+                future.cancel()
+                self._record_end(started, "timeout")
+                self._restart_pool("outer-timeout")
+                return {
+                    "status": "timeout",
+                    "error": f"Execution timed out ({timeout_value}s).",
+                    "stdout": "",
+                    "return_value": None,
+                }
+            except BrokenProcessPool:
+                self._record_end(started, "error")
+                self._restart_pool("broken-process-pool")
+                return {
+                    "status": "system_error",
+                    "error": "Process pool crashed and has been restarted. Please retry.",
+                    "stdout": "",
+                    "return_value": None,
+                }
+            except Exception as exc:
+                self._record_end(started, "error")
+                return {"status": "system_error", "error": str(exc), "stdout": "", "return_value": None}
+        finally:
+            if acquired:
+                self._slots.release()
+
+    def run(
+        self,
+        raw_text: str,
+        extract_code: bool = True,
+        timeout: int | None = None,
+        auto_invoke: bool = True,
+    ) -> Dict[str, Any]:
+        timeout_value = self.timeout if timeout is None else max(1, int(timeout))
+        code = CodeExtractor.extract(raw_text) if extract_code else raw_text
+        if not code.strip():
+            return {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+
+        started = self._record_start()
+        future = None
+        try:
+            future = self._submit(code, timeout_value, auto_invoke)
+            result = future.result(timeout=timeout_value + 1)
+            status = str(result.get("status", "success"))
+            self._record_end(started, "success" if status == "success" else status)
+            return result
         except TimeoutError:
-            future.cancel()
-            timeout_value = self.timeout if timeout is None else timeout
+            if future is not None:
+                future.cancel()
+            self._record_end(started, "timeout")
+            self._restart_pool("sync-timeout")
             return {
                 "status": "timeout",
                 "error": f"Execution timed out ({timeout_value}s).",
                 "stdout": "",
                 "return_value": None,
             }
-        except Exception as e:
-            return {"status": "system_error", "error": str(e), "stdout": "", "return_value": None}
+        except BrokenProcessPool:
+            self._record_end(started, "error")
+            self._restart_pool("broken-process-pool")
+            return {
+                "status": "system_error",
+                "error": "Process pool crashed and has been restarted. Please retry.",
+                "stdout": "",
+                "return_value": None,
+            }
+        except Exception as exc:
+            self._record_end(started, "error")
+            return {"status": "system_error", "error": str(exc), "stdout": "", "return_value": None}
 
-    def shutdown(self):
-        if hasattr(self, '_executor'):
-            self._executor.shutdown(wait=False)
+    def stats(self) -> Dict[str, Any]:
+        with self._metric_lock:
+            avg_latency = self._latency_ms_sum / self._success_requests if self._success_requests else 0.0
+            return {
+                "status": "ok",
+                "available_vcpu": AVAILABLE_VCPU,
+                "max_workers": self.max_workers,
+                "max_inflight": self.max_inflight,
+                "timeout_seconds": self.timeout,
+                "queue_wait_seconds": self.queue_wait_timeout,
+                "worker_max_tasks": self.worker_max_tasks,
+                "total_requests": self._total_requests,
+                "success_requests": self._success_requests,
+                "busy_requests": self._busy_requests,
+                "timeout_requests": self._timeout_requests,
+                "error_requests": self._error_requests,
+                "inflight_requests": self._inflight,
+                "max_inflight_seen": self._max_inflight_seen,
+                "pool_restarts": self._pool_restarts,
+                "avg_success_latency_ms": round(avg_latency, 3),
+            }
 
-    def run_humaneval(
-        self,
-        code: str,
-        prompt: str,
-        test: str,
-        entry_point: str,
-        timeout: int | None = None,
-    ) -> Dict[str, Any]:
-        timeout_value = self.timeout if timeout is None else timeout
-        return run_humaneval_case(
-            code=code,
-            prompt=prompt,
-            test=test,
-            entry_point=entry_point,
-            timeout=timeout_value,
-        )
+    def shutdown(self) -> None:
+        with self._executor_lock:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _build_humaneval_program(code: str, prompt: str, test: str, entry_point: str) -> tuple[str, bool]:
-    """
-    Build a deterministic HumanEval execution program.
-    Returns (program, used_prompt_prefix).
-    """
     used_prompt_prefix = f"def {entry_point}" not in code
     candidate_program = f"{prompt}\n{code}" if used_prompt_prefix else code
 
@@ -254,18 +494,34 @@ result = __slime_he_result
     return program, used_prompt_prefix
 
 
+_SANDBOX_CACHE: dict[tuple[int, int, int], ToolSandbox] = {}
+_SANDBOX_CACHE_LOCK = threading.Lock()
+
+
+def _get_cached_sandbox(max_workers: int, timeout: int, worker_max_tasks: int = DEFAULT_WORKER_MAX_TASKS) -> ToolSandbox:
+    key = (max_workers, timeout, worker_max_tasks)
+    with _SANDBOX_CACHE_LOCK:
+        sandbox = _SANDBOX_CACHE.get(key)
+        if sandbox is None:
+            sandbox = ToolSandbox(
+                max_workers=max_workers,
+                timeout=timeout,
+                max_inflight=max(max_workers * 3, max_workers + 8),
+                queue_wait_timeout=DEFAULT_QUEUE_WAIT_SECONDS,
+                worker_max_tasks=worker_max_tasks,
+            )
+            _SANDBOX_CACHE[key] = sandbox
+    return sandbox
+
+
 def run_humaneval_case(
     code: str,
     prompt: str,
     test: str,
     entry_point: str,
-    timeout: int = 15,
-    max_workers: int = 2,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    max_workers: int = DEFAULT_POOL_WORKERS,
 ) -> Dict[str, Any]:
-    """
-    Library API: run HumanEval-style candidate code in multi-process sandbox.
-    Returns a normalized dict used by compile-r1 tool calling.
-    """
     code = CodeExtractor.extract(str(code))
     prompt = str(prompt or "")
     test = str(test or "")
@@ -282,7 +538,7 @@ def run_humaneval_case(
             "used_prompt_prefix": False,
         }
 
-    sandbox = ToolSandbox(max_workers=max_workers, timeout=timeout)
+    sandbox = _get_cached_sandbox(max_workers=max_workers, timeout=timeout)
     program, used_prompt_prefix = _build_humaneval_program(
         code=code,
         prompt=prompt,
@@ -290,7 +546,7 @@ def run_humaneval_case(
         entry_point=entry_point,
     )
 
-    tool_result = sandbox.run(program, extract_code=False, timeout=timeout)
+    tool_result = sandbox.run(program, extract_code=False, timeout=timeout, auto_invoke=False)
     normalized: Dict[str, Any] = {
         "passed": False,
         "status": "runtime_error",
@@ -306,7 +562,7 @@ def run_humaneval_case(
         normalized["status"] = "timeout"
         normalized["error"] = tool_result.get("error", "") or f"Execution timed out ({timeout}s)."
         return normalized
-    if status in ("error", "system_error"):
+    if status in ("error", "system_error", "busy"):
         normalized["status"] = "runtime_error"
         normalized["error"] = tool_result.get("error", "") or "Sandbox execution failed."
         return normalized
@@ -314,7 +570,6 @@ def run_humaneval_case(
     rv = tool_result.get("return_value")
     if isinstance(rv, dict) and "passed" in rv:
         normalized.update(rv)
-        # keep stdout captured by executor, do not overwrite with harness payload
         normalized["stdout"] = tool_result.get("stdout", "") or normalized.get("stdout", "")
         normalized.setdefault("stderr", "")
         return normalized
@@ -324,8 +579,118 @@ def run_humaneval_case(
     return normalized
 
 
+class RunRequest(BaseModel):
+    raw_text: str = Field(..., description="Python code or markdown text containing Python code.")
+    extract_code: bool = Field(default=True, description="Whether to extract code blocks from markdown.")
+    timeout: int | None = Field(default=None, ge=1, le=180)
+    auto_invoke: bool = Field(
+        default=True,
+        description="Whether to auto-call zero-arg functions / infer return value after exec.",
+    )
+
+
+class RunResponse(BaseModel):
+    status: str
+    return_value: Optional[Any] = None
+    stdout: str = ""
+    error: Optional[str] = None
+
+
+class HumanEvalRequest(BaseModel):
+    code: str
+    prompt: str
+    test: str
+    entry_point: str
+    timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=180)
+    max_workers: int = Field(default=DEFAULT_POOL_WORKERS, ge=1, le=256)
+
+
+MAX_WORKERS = _env_int("RUNPY_MAX_WORKERS", DEFAULT_POOL_WORKERS)
+TIMEOUT_SECONDS = _env_int("RUNPY_TIMEOUT", DEFAULT_TIMEOUT_SECONDS)
+MAX_INFLIGHT = _env_int("RUNPY_MAX_INFLIGHT", DEFAULT_MAX_INFLIGHT)
+QUEUE_WAIT_SECONDS = _env_float("RUNPY_QUEUE_WAIT_TIMEOUT", DEFAULT_QUEUE_WAIT_SECONDS, minimum=0.0)
+WORKER_MAX_TASKS = _env_int("RUNPY_WORKER_MAX_TASKS", DEFAULT_WORKER_MAX_TASKS)
+
+SERVICE_SANDBOX = ToolSandbox(
+    max_workers=MAX_WORKERS,
+    timeout=TIMEOUT_SECONDS,
+    max_inflight=MAX_INFLIGHT,
+    queue_wait_timeout=QUEUE_WAIT_SECONDS,
+    worker_max_tasks=WORKER_MAX_TASKS,
+)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    SERVICE_SANDBOX.shutdown()
+
+
+app = FastAPI(
+    title="RunPythonTool Service",
+    version="1.1.0",
+    description="High-throughput Python execution service with process-isolated workers.",
+    lifespan=_lifespan,
+)
+
+
+@app.get("/healthz")
+async def healthz() -> Dict[str, Any]:
+    return {"status": "ok"}
+
+
+@app.get("/stats")
+async def stats() -> Dict[str, Any]:
+    return SERVICE_SANDBOX.stats()
+
+
+@app.post("/run", response_model=RunResponse)
+async def run_python(request: RunRequest) -> Dict[str, Any]:
+    result = await SERVICE_SANDBOX.run_async(
+        request.raw_text,
+        extract_code=request.extract_code,
+        timeout=request.timeout,
+        auto_invoke=request.auto_invoke,
+    )
+    if result.get("status") == "busy":
+        raise HTTPException(status_code=429, detail=result)
+    return result
+
+
+@app.post("/run_humaneval")
+async def run_humaneval_api(request: HumanEvalRequest) -> Dict[str, Any]:
+    result = await asyncio.to_thread(
+        run_humaneval_case,
+        code=request.code,
+        prompt=request.prompt,
+        test=request.test,
+        entry_point=request.entry_point,
+        timeout=request.timeout,
+        max_workers=request.max_workers,
+    )
+    return result
+
+
+def main() -> None:
+    host = os.getenv("RUNPY_HOST", "0.0.0.0")
+    port = _env_int("RUNPY_PORT", 18080)
+    workers = _env_int("RUNPY_API_WORKERS", 1)
+    log_level = os.getenv("RUNPY_LOG_LEVEL", "info")
+
+    if workers == 1:
+        uvicorn.run(app, host=host, port=port, log_level=log_level)
+        return
+
+    uvicorn.run("RunPythonTool:app", host=host, port=port, workers=workers, log_level=log_level)
+
+
+if __name__ == "__main__":
+    main()
+
+
 __all__ = [
     "CodeExtractor",
     "ToolSandbox",
     "run_humaneval_case",
+    "app",
 ]
