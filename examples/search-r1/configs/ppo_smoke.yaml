@@ -34,13 +34,11 @@ CUDA_HOME: "/usr/local/cuda"
 # ===== 集群 / 并行 =====
 # 可见 GPU 数（单机）。
 NUM_GPUS: 4
-# 固定使用前四张卡，避免自动挑卡落到繁忙 GPU。
-SELECTED_GPUS: "0,1,2,3"
 # actor 训练并行。
 ACTOR_NUM_NODES: 1
 ACTOR_NUM_GPUS_PER_NODE: 1
 # rollout 并行。
-ROLLOUT_NUM_GPUS: 2
+ROLLOUT_NUM_GPUS: 1
 ROLLOUT_NUM_GPUS_PER_ENGINE: 1
 # critic 并行（可留空，留空则默认跟 actor 一致）。
 CRITIC_NUM_NODES: ""
@@ -51,8 +49,8 @@ MIN_FREE_MEM_MB: 70000
 # 训练并行相关。
 TENSOR_MODEL_PARALLEL_SIZE: 1
 MODEL_NUM_QUERY_GROUPS: 2
-MAX_TOKENS_PER_GPU: 2560
-SGLANG_MEM_FRAC: 0.16
+MAX_TOKENS_PER_GPU: 2048
+SGLANG_MEM_FRAC: 0.12
 TRAIN_MEMORY_MARGIN_BYTES: 2147483648
 ENABLE_COLOCATE: 0
 ENABLE_OFFLOAD_ROLLOUT: 0
@@ -64,22 +62,22 @@ NO_ROPE_FUSION: 1
 NO_PERSIST_LAYER_NORM: 1
 # 当前环境无 APEX CUDA 扩展，需禁用梯度累积融合。
 NO_GRADIENT_ACCUMULATION_FUSION: 1
-# 当前环境缺少 Megatron fused softmax CUDA 扩展，需关闭该融合。
+# 当前环境缺少 Megatron fused softmax CUDA 扩展，需禁用该融合。
 NO_MASKED_SOFTMAX_FUSION: 1
 
 # ===== rollout / 训练步数 =====
 # NUM_EPOCH 非空时优先按 epoch 计算步数。
-NUM_EPOCH: 2
-NUM_ROLLOUT: 3600
-ROLLOUT_BATCH_SIZE: 4
-N_SAMPLES_PER_PROMPT: 4
-GLOBAL_BATCH_SIZE: 16
-ROLLOUT_MAX_RESPONSE_LEN: 192
+NUM_EPOCH: ""
+NUM_ROLLOUT: 8
+ROLLOUT_BATCH_SIZE: 2
+N_SAMPLES_PER_PROMPT: 2
+GLOBAL_BATCH_SIZE: 4
+ROLLOUT_MAX_RESPONSE_LEN: 128
 ROLLOUT_TEMPERATURE: 1.0
 
 # ===== 保存 / 评估 =====
 SAVE_INTERVAL: 200
-EVAL_INTERVAL: 50
+EVAL_INTERVAL: 4
 SKIP_EVAL_BEFORE_TRAIN: 1
 N_SAMPLES_PER_EVAL_PROMPT: 1
 EVAL_TOP_K: 1
@@ -121,14 +119,14 @@ REWARDS_NORMALIZATION: 1
 # critic value clipping（value loss）。
 VALUE_CLIP: 0.2
 # 前多少步只训练 critic。
-NUM_CRITIC_ONLY_STEPS: 8
+NUM_CRITIC_ONLY_STEPS: 1
 # critic checkpoint（可留空：默认跟 actor 路径逻辑一致）。
 CRITIC_LOAD: ""
 CRITIC_SAVE: ""
 # critic 学习率（留空则与 LR 相同）。
 CRITIC_LR: 1.2e-6
 # critic lr warmup steps。
-CRITIC_LR_WARMUP_ITERS: 2
+CRITIC_LR_WARMUP_ITERS: 1
 
 # ===== 参考模型 / 额外稳定项 =====
 # ref 模型更新间隔（rollout step），留空表示不更新 ref。

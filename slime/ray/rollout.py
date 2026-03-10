@@ -95,12 +95,30 @@ class EngineGroup:
                 key: os.environ.get(key, default_val)
                 for key, default_val in {
                     "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
-                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+                    # Keep TP memory imbalance check disabled by default on shared GPUs.
+                    # Older/newer sglang versions parse different env keys.
+                    "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": os.environ.get(
+                        "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK", "false"
+                    ),
+                    "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": os.environ.get(
+                        "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK", "false"
+                    ),
+                    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": os.environ.get(
+                        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK", "false"
+                    ),
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-                    "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+                    "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "true",
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+                    # Internal engine health checks must never go through external proxies.
+                    "NO_PROXY": "127.0.0.1,localhost",
+                    "no_proxy": "127.0.0.1,localhost",
+                    "HTTP_PROXY": "",
+                    "HTTPS_PROXY": "",
+                    "ALL_PROXY": "",
+                    "http_proxy": "",
+                    "https_proxy": "",
+                    "all_proxy": "",
                 }.items()
             }
 
@@ -657,6 +675,13 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
     )
     addr_and_ports = [{} for _ in range(num_engines)]
 
+    start_port_env = os.environ.get("SLIME_ROLLOUT_START_PORT", "15000")
+    try:
+        rollout_start_port = int(start_port_env)
+    except ValueError:
+        logger.warning("Invalid SLIME_ROLLOUT_START_PORT=%s, fallback to 15000", start_port_env)
+        rollout_start_port = 15000
+
     visited_nodes = set()
     for rank, engine in rollout_engines:
         if rank // num_engines_per_node in visited_nodes:
@@ -669,7 +694,7 @@ def _allocate_rollout_engine_addr_and_ports_normal(*, args, num_engines, rollout
         def get_addr_and_ports(engine):
             # use small ports to prevent ephemeral port between 32768 and 65536.
             # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
-            start_port = 15000
+            start_port = rollout_start_port
 
             def port(consecutive=1):
                 nonlocal start_port

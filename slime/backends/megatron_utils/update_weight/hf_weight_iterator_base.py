@@ -12,6 +12,15 @@ class HfWeightIteratorBase(ABC):
             "bridge": HfWeightIteratorBridge,
         }[args.megatron_to_hf_mode]
 
+        # Fallback for newer mbridge APIs that removed legacy bridge export hooks.
+        if c is HfWeightIteratorBridge:
+            from megatron.bridge import AutoBridge
+
+            bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            has_legacy_export = hasattr(bridge, "get_conversion_tasks") and hasattr(bridge, "export_hf_weights")
+            if not has_legacy_export:
+                c = HfWeightIteratorDirect
+
         return c(args, model, **kwargs)
 
     def __init__(self, args, model, model_name, quantization_config):

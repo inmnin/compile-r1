@@ -18,12 +18,20 @@ step_axes:
 # 你最关心的「reward / loss / 熵 / KL」对应名称如下。
 # 注意：如果 W&B 里搜不到 reward，优先搜 rollout/raw_reward 和 eval/search_r1_test。
 core_metrics:
+  # reward
   reward_train_raw: "rollout/raw_reward"
   reward_train_used_for_update: "rollout/rewards"
   reward_eval: "eval/search_r1_test"
+  eval_acc: "eval/search_r1_test"
+  # loss
   loss_total: "train/loss"
   loss_pg: "train/pg_loss"
-  entropy_proxy: "train/entropy_loss"
+  loss_value_critic: "train/critic-value_loss"
+  # policy entropy
+  policy_entropy_train: "train/entropy_loss"
+  policy_entropy_eval_proxy_1: "eval/search_r1_test/response_len/mean"
+  policy_entropy_eval_proxy_2: "eval/search_r1_test/truncated_ratio"
+  # kl
   kl_ppo: "train/ppo_kl"
   kl_loss_optional: "train/kl_loss"
 
@@ -33,6 +41,7 @@ recommended_panels:
   train:
     - "train/loss"
     - "train/pg_loss"
+    - "train/critic-value_loss"
     - "train/entropy_loss"
     - "train/ppo_kl"
     - "train/pg_clipfrac"
@@ -92,14 +101,22 @@ reading_guide:
         - "长期无变化：可能策略几乎不更新（学习率太小、clip 过强、奖励无区分度）。"
 
   entropy:
-    proxy:
+    train:
       metric: "train/entropy_loss"
       normal_shape: "中后期缓慢下降，表示策略逐步收敛。"
       abnormal_shape:
         - "很快塌到接近 0：探索不足，可能过早收敛。"
         - "持续很高且不降：策略发散或学习率偏大。"
       notes:
-        - "该值是框架记录的熵相关项（常作为策略熵代理观察）。"
+        - "该值是训练阶段最稳定的策略熵代理。"
+    eval_proxy:
+      metric_1: "eval/search_r1_test/response_len/mean"
+      metric_2: "eval/search_r1_test/truncated_ratio"
+      normal_shape: "response_len 均值下降并稳定、truncated_ratio 维持低位（通常<0.2）。"
+      abnormal_shape:
+        - "response_len 快速拉满且 truncated_ratio 走高：常见于策略发散/复读。"
+      notes:
+        - "框架默认没有直接的 eval entropy 曲线，以上两条是可操作的 eval 策略熵代理。"
 
   kl:
     ppo_kl:
@@ -178,6 +195,9 @@ ppo_column:
       - "train/ppo_kl"
       - "train/entropy_loss"
       - "train/grad_norm"
+    eval_policy_proxy:
+      - "eval/search_r1_test/response_len/mean"
+      - "eval/search_r1_test/truncated_ratio"
     critic_value:
       - "train/critic-value_loss"
       - "train/critic-value_clipfrac"
@@ -204,6 +224,11 @@ ppo_column:
       abnormal:
         - "train/ppo_kl 持续走高并伴随 reward 下滑：策略漂移过快。"
         - "train/entropy_loss 快速塌陷到很低：探索不足。"
+    eval_policy_proxy:
+      normal: "eval/search_r1_test/response_len/mean 与 truncated_ratio 都处于可控区间（不过度拉长、不持续截断）。"
+      abnormal:
+        - "response_len 均值上行且 truncated_ratio 高企：策略进入高熵/失控输出。"
+        - "response_len 均值过低且 acc 不升：探索不足或过度保守。"
     critic_value:
       normal: "train/critic-value_loss 下降或趋稳，value_clipfrac 中低且逐步稳定。"
       abnormal:

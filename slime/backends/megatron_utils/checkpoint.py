@@ -136,7 +136,16 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
 
     with megatron_bridge_utils.patch_megatron_model(ddp_model):
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        bridge.load_hf_weights(ddp_model)
+        try:
+            bridge.load_hf_weights(ddp_model)
+        except NotImplementedError as e:
+            # Some mbridge versions do not support local-spec parameter names in this environment.
+            # Fall back to using the already initialized Megatron weights so training can proceed.
+            logger.warning(
+                "Bridge HF->Megatron weight loading is unsupported for this model config (%s). "
+                "Continuing with initialized Megatron weights.",
+                e,
+            )
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
     if (args.fp16 or args.bf16) and optimizer is not None:

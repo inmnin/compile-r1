@@ -33,6 +33,12 @@ from .model_provider import get_model_provider_func, wrap_model_provider_with_fr
 logger = logging.getLogger(__name__)
 
 
+def _packed_seq_enabled() -> bool:
+    """Whether packed-seq parameters should be passed into Megatron attention."""
+    flag = os.environ.get("SLIME_DISABLE_PACKED_SEQ", "0").strip().lower()
+    return flag not in {"1", "true", "yes", "on"}
+
+
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
     """Create and configure the optimizer learning-rate/weight-decay scheduler.
 
@@ -221,7 +227,7 @@ def forward_only(
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
-        packed_seq_params = batch["packed_seq_params"]
+        packed_seq_params = batch["packed_seq_params"] if _packed_seq_enabled() else None
         total_lengths = batch["total_lengths"]
         response_lengths = batch["response_lengths"]
         output_tensor = model(
@@ -384,21 +390,23 @@ def train_one_step(
 
         if return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
+            packed_seq_params = batch["packed_seq_params"] if _packed_seq_enabled() else None
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
                 position_ids=None,
                 attention_mask=None,
                 labels=None,
-                packed_seq_params=batch["packed_seq_params"],
+                packed_seq_params=packed_seq_params,
                 loss_mask=batch["full_loss_masks"],
             )
         else:
+            packed_seq_params = batch["packed_seq_params"] if _packed_seq_enabled() else None
             forward_kwargs = {
                 "input_ids": batch["tokens"],
                 "position_ids": None,
                 "attention_mask": None,
                 "labels": None,
-                "packed_seq_params": batch["packed_seq_params"],
+                "packed_seq_params": packed_seq_params,
                 "loss_mask": batch["full_loss_masks"],
             }
 

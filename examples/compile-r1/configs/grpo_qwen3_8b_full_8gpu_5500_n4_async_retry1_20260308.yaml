@@ -1,0 +1,84 @@
+BASE_DIR: /mnt/workspace/jkh
+SLIME_DIR: /mnt/workspace/jkh/slime
+MEGATRON_DIR: /mnt/workspace/jkh/Megatron-LM
+COMPILE_R1_DIR: /mnt/workspace/jkh/slime/examples/compile-r1
+
+MODEL_DIR: /mnt/workspace/jkh/model/Qwen-Qwen3-8B
+MODEL_SCRIPT: /mnt/workspace/jkh/slime/scripts/models/qwen3-8B.sh
+HF_CHECKPOINT: /mnt/workspace/jkh/slime/examples/compile-r1/train_log/cold_start_sft_qwen3_8b_full_result_masked_val300/checkpoint-785
+REF_LOAD: /mnt/workspace/jkh/slime/examples/compile-r1/train_log/cold_start_sft_qwen3_8b_full_result_masked_val300/checkpoint-785_torch_dist
+MEGATRON_TO_HF_MODE: raw
+
+TRAIN_DATA: /mnt/workspace/jkh/slime/examples/compile-r1/data/train/answer_rl_prompt_checked.parquet
+TEST_DATA: /mnt/workspace/jkh/slime/examples/compile-r1/data/test/answer_rl_prompt_checked.parquet
+LABEL_KEY: answer
+EVAL_LABEL_KEY: answer
+APPLY_CHAT_TEMPLATE: 1
+
+CONDA_EXE: /mnt/workspace/jkh/miniconda3/bin/conda
+TRAIN_ENV_NAME: slime
+
+NUM_GPUS: 8
+SELECTED_GPUS: 0,1,2,3,4,5,6,7
+MIN_FREE_MEM_MB: 50000
+ROLLOUT_NUM_GPUS: 8
+ROLLOUT_NUM_GPUS_PER_ENGINE: 1
+ACTOR_NUM_NODES: 1
+ACTOR_NUM_GPUS_PER_NODE: 8
+TENSOR_MODEL_PARALLEL_SIZE: 4
+
+MAX_TOKENS_PER_GPU: 6144
+SGLANG_MEM_FRAC: 0.42
+TRAIN_MEMORY_MARGIN_BYTES: 6442450944
+ENABLE_COLOCATE: 1
+ENABLE_DYNAMIC_BATCH_SIZE: 0
+DISABLE_PACKED_SEQ: 1
+SEQUENCE_PARALLEL: 0
+
+NUM_ROLLOUT: 5447
+ROLLOUT_BATCH_SIZE: 12
+N_SAMPLES_PER_PROMPT: 4
+GLOBAL_BATCH_SIZE: 48
+ROLLOUT_MAX_RESPONSE_LEN: 5500
+ROLLOUT_TEMPERATURE: 1.0
+
+SAVE_INTERVAL: 100
+EVAL_INTERVAL: 100
+
+ADVANTAGE_ESTIMATOR: grpo
+ENTROPY_COEF: 0.0
+EPS_CLIP: 0.2
+EPS_CLIP_HIGH: 0.28
+GAMMA: 1.0
+LAMBDA: 1.0
+
+OPTIMIZER: adam
+LR: 5.0e-06
+LR_DECAY_STYLE: constant
+WEIGHT_DECAY: 0.01
+ADAM_BETA1: 0.9
+ADAM_BETA2: 0.98
+
+COMPILE_R1_MAX_TURNS: 3
+COMPILE_R1_TOOL_CONCURRENCY: 32
+COMPILE_R1_ASYNC_TOOL_WORKERS: 32
+COMPILE_R1_ASYNC_TOOL_TIMEOUT_BUFFER: 6
+COMPILE_R1_TIMEOUT_SECONDS: 10
+COMPILE_R1_MEMORY_MB: 1024
+COMPILE_R1_RETURN_LOGPROB: 1
+COMPILE_R1_FORMAT_SCORE: 0.15
+COMPILE_R1_TOOL_BONUS: 0.05
+COMPILE_R1_SANDBOX_BACKEND: runpytool
+COMPILE_R1_RUNPY_MAX_WORKERS: 24
+SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK: 0
+
+FORCE_DIRECT_RUN: 1
+DIRECT_RUN_ON_SUBMIT_FAIL: 1
+SLIME_ROLLOUT_START_PORT: 17000
+RAY_HEAD_PORT: 26989
+RAY_DASHBOARD_PORT: 28975
+
+WANDB_MODE: offline
+WANDB_PROJECT: compile-r1
+
+EXTRA_TRAIN_ARGS: --disable-rewards-normalization

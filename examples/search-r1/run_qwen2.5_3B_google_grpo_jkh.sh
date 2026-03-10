@@ -138,8 +138,17 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-15}"
 
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-3072}"
 SGLANG_MEM_FRAC="${SGLANG_MEM_FRAC:-0.15}"
+TRAIN_MEMORY_MARGIN_BYTES="${TRAIN_MEMORY_MARGIN_BYTES:-0}"
+ENABLE_COLOCATE="${ENABLE_COLOCATE:-1}"
+ENABLE_OFFLOAD_ROLLOUT="${ENABLE_OFFLOAD_ROLLOUT:-1}"
+ENABLE_DYNAMIC_BATCH_SIZE="${ENABLE_DYNAMIC_BATCH_SIZE:-1}"
+DISABLE_PACKED_SEQ="${DISABLE_PACKED_SEQ:-0}"
 TENSOR_MODEL_PARALLEL_SIZE="${TENSOR_MODEL_PARALLEL_SIZE:-2}"
 MODEL_NUM_QUERY_GROUPS="${MODEL_NUM_QUERY_GROUPS:-2}"
+NO_ROPE_FUSION="${NO_ROPE_FUSION:-1}"
+NO_PERSIST_LAYER_NORM="${NO_PERSIST_LAYER_NORM:-1}"
+NO_GRADIENT_ACCUMULATION_FUSION="${NO_GRADIENT_ACCUMULATION_FUSION:-1}"
+NO_MASKED_SOFTMAX_FUSION="${NO_MASKED_SOFTMAX_FUSION:-0}"
 
 OPTIMIZER="${OPTIMIZER:-adam}"
 LR="${LR:-1e-6}"
@@ -198,15 +207,15 @@ PROXY_REFRESH_SECS="${PROXY_REFRESH_SECS:-300}"
 EXPORT_TEST_TRAJ="${EXPORT_TEST_TRAJ:-1}"
 TEST_EXPORT_MODE="${TEST_EXPORT_MODE:-final}"
 TEST_EXPORT_EVERY_N_EVAL="${TEST_EXPORT_EVERY_N_EVAL:-1}"
+# Safety switch: do not kill shared sglang services unless explicitly requested.
+CLEANUP_SGLANG_PROCS="${CLEANUP_SGLANG_PROCS:-0}"
 export http_proxy="http://127.0.0.1:7898"
 export https_proxy="http://127.0.0.1:7898"
 export all_proxy="http://127.0.0.1:7898"
 
 MAMBA_EXE="${MAMBA_EXE:-${HOME}/.local/bin/micromamba}"
-if [[ ! -x "${MAMBA_EXE}" ]]; then
-  echo "micromamba not found at ${MAMBA_EXE}" >&2
-  exit 1
-fi
+CONDA_EXE="${CONDA_EXE:-${BASE_DIR}/miniconda3/bin/conda}"
+TRAIN_ENV_NAME="${TRAIN_ENV_NAME:-slime}"
 
 is_true() {
   case "${1,,}" in
@@ -285,28 +294,89 @@ mkdir -p "${RUN_ROOT}" "${CKPT_DIR}" "${WANDB_DIR}" "${DEBUG_DIR}" "${LOG_DIR}"
 
 export PATH="${HOME}/.local/bin:${PATH}"
 set +u
-eval "$("${MAMBA_EXE}" shell hook --shell bash)"
-micromamba activate slime
+if [[ -x "${MAMBA_EXE}" ]]; then
+  eval "$("${MAMBA_EXE}" shell hook --shell bash)"
+  if ! micromamba activate "${TRAIN_ENV_NAME}"; then
+    echo "Failed to activate micromamba env '${TRAIN_ENV_NAME}'." >&2
+    exit 1
+  fi
+elif [[ -x "${CONDA_EXE}" ]]; then
+  eval "$("${CONDA_EXE}" shell.bash hook)"
+  if ! conda activate "${TRAIN_ENV_NAME}" 2>/dev/null; then
+    for fallback_env in r1 lf base; do
+      if conda activate "${fallback_env}" 2>/dev/null; then
+        echo "WARN: env '${TRAIN_ENV_NAME}' not found, fallback to '${fallback_env}'."
+        TRAIN_ENV_NAME="${fallback_env}"
+        break
+      fi
+    done
+  fi
+  if [[ "${CONDA_DEFAULT_ENV:-}" != "${TRAIN_ENV_NAME}" ]]; then
+    echo "Failed to activate conda env '${TRAIN_ENV_NAME}' via ${CONDA_EXE}." >&2
+    exit 1
+  fi
+else
+  echo "Neither micromamba nor conda was found." >&2
+  echo "Checked MAMBA_EXE=${MAMBA_EXE} and CONDA_EXE=${CONDA_EXE}" >&2
+  exit 1
+fi
 set -u
 
 cd "${SLIME_DIR}"
 
 export PYTHONBUFFERED=16
-export CUDA_HOME="${CONDA_PREFIX}"
+# Prefer a CUDA_HOME that actually contains nvcc; FlashInfer JIT needs it.
+# Always prefer the real CUDA toolkit root to avoid missing headers when nvcc
+# in conda env is only a symlink wrapper.
+if [[ -n "${CUDA_HOME:-}" && -x "${CUDA_HOME}/bin/nvcc" ]]; then
+  CUDA_HOME="${CUDA_HOME}"
+elif [[ -x "/usr/local/cuda/bin/nvcc" ]]; then
+  CUDA_HOME="/usr/local/cuda"
+elif [[ -x "${CONDA_PREFIX}/bin/nvcc" ]]; then
+  CONDA_NVCC_REAL="$(readlink -f "${CONDA_PREFIX}/bin/nvcc" || true)"
+  if [[ "${CONDA_NVCC_REAL}" == "/usr/local/cuda/bin/nvcc" ]]; then
+    CUDA_HOME="/usr/local/cuda"
+  else
+    CUDA_HOME="${CONDA_PREFIX}"
+  fi
+elif command -v nvcc >/dev/null 2>&1; then
+  CUDA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v nvcc)")")")"
+else
+  CUDA_HOME="${CONDA_PREFIX}"
+fi
+export CUDA_HOME
+export PATH="${CUDA_HOME}/bin:${PATH}"
+export CPATH="${CUDA_HOME}/include:${CPATH:-}"
+export CPLUS_INCLUDE_PATH="${CUDA_HOME}/include:${CPLUS_INCLUDE_PATH:-}"
+if [[ -d "${CUDA_HOME}/lib64" ]]; then
+  export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+fi
 export PYTHONPATH="${MEGATRON_DIR}:${SEARCH_R1_DIR}:${PYTHONPATH:-}"
-export no_proxy="127.0.0.1,localhost"
-export NO_PROXY="127.0.0.1,localhost"
+LOCAL_NODE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+LOCAL_NODE_IP="${LOCAL_NODE_IP:-127.0.0.1}"
+# Local retrieval does not require outbound proxy; keep internal engine checks direct.
+if [[ "${SEARCH_BACKEND}" == "local" ]]; then
+  export http_proxy=""
+  export https_proxy=""
+  export all_proxy=""
+fi
+export no_proxy="127.0.0.1,localhost,${LOCAL_NODE_IP}"
+export NO_PROXY="${no_proxy}"
 export http_proxy
 export https_proxy
 export all_proxy
+export SLIME_DISABLE_PACKED_SEQ="${DISABLE_PACKED_SEQ}"
 
 # Best-effort proxy refresh loop (note: environment vars are inherited at process start).
-if [[ "${PROXY_REFRESH_SECS}" -gt 0 ]]; then
+if [[ "${PROXY_REFRESH_SECS}" -gt 0 ]] && [[ -n "${http_proxy}" || -n "${https_proxy}" || -n "${all_proxy}" ]]; then
+  PROXY_HTTP="${http_proxy}"
+  PROXY_HTTPS="${https_proxy}"
+  PROXY_ALL="${all_proxy}"
   (
     while true; do
-      export http_proxy="http://127.0.0.1:7898"
-      export https_proxy="http://127.0.0.1:7898"
-      export all_proxy="http://127.0.0.1:7898"
+      export http_proxy="${PROXY_HTTP}"
+      export https_proxy="${PROXY_HTTPS}"
+      export all_proxy="${PROXY_ALL}"
       sleep "${PROXY_REFRESH_SECS}"
     done
   ) >/dev/null 2>&1 &
@@ -330,12 +400,19 @@ if [[ ! -f "${TEST_PARQUET}" ]]; then
   exit 1
 fi
 
+# PPO 使用 critic，若未显式设置保存目录则回落到本次 run 的 ckpt 目录，
+# 避免 critic 在保存阶段拿到 None 导致异常退出。
+if [[ "${ADVANTAGE_ESTIMATOR}" == "ppo" && -z "${CRITIC_SAVE}" ]]; then
+  CRITIC_SAVE="${CKPT_DIR}"
+fi
+
 {
   echo "date=$(date -Iseconds)"
   echo "exp_name=${EXP_NAME}"
   echo "config_file=${CONFIG_FILE}"
   echo "run_root=${RUN_ROOT}"
   echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
+  echo "cuda_home=${CUDA_HOME}"
   echo "num_gpus=${NUM_GPUS}"
   echo "actor_num_nodes=${ACTOR_NUM_NODES}"
   echo "actor_num_gpus_per_node=${ACTOR_NUM_GPUS_PER_NODE}"
@@ -370,6 +447,14 @@ fi
   echo "test_export_every_n_eval=${TEST_EXPORT_EVERY_N_EVAL}"
   echo "max_tokens_per_gpu=${MAX_TOKENS_PER_GPU}"
   echo "sglang_mem_frac=${SGLANG_MEM_FRAC}"
+  echo "enable_colocate=${ENABLE_COLOCATE}"
+  echo "enable_offload_rollout=${ENABLE_OFFLOAD_ROLLOUT}"
+  echo "enable_dynamic_batch_size=${ENABLE_DYNAMIC_BATCH_SIZE}"
+  echo "disable_packed_seq=${DISABLE_PACKED_SEQ}"
+  echo "no_rope_fusion=${NO_ROPE_FUSION}"
+  echo "no_persist_layer_norm=${NO_PERSIST_LAYER_NORM}"
+  echo "no_gradient_accumulation_fusion=${NO_GRADIENT_ACCUMULATION_FUSION}"
+  echo "no_masked_softmax_fusion=${NO_MASKED_SOFTMAX_FUSION}"
   echo "optimizer=${OPTIMIZER}"
   echo "lr=${LR}"
   echo "lr_decay_style=${LR_DECAY_STYLE}"
@@ -430,7 +515,10 @@ fi
 } > "${RUN_ROOT}/run_config.env"
 
 ray stop --force >/dev/null 2>&1 || true
-pkill -f sglang >/dev/null 2>&1 || true
+if [[ "${CLEANUP_SGLANG_PROCS}" == "1" ]]; then
+  # Only clean up child processes of this launcher when explicitly enabled.
+  pkill -P $$ -f sglang >/dev/null 2>&1 || true
+fi
 sleep 2
 
 ray start --head --node-ip-address 127.0.0.1 --num-gpus "${NUM_GPUS}" --disable-usage-stats
@@ -505,9 +593,11 @@ PERF_ARGS=(
   --recompute-granularity full
   --recompute-method uniform
   --recompute-num-layers 1
-  --use-dynamic-batch-size
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
 )
+if is_true "${ENABLE_DYNAMIC_BATCH_SIZE}"; then
+  PERF_ARGS+=(--use-dynamic-batch-size)
+fi
 
 GRPO_ARGS=(
   --advantage-estimator "${ADVANTAGE_ESTIMATOR}"
@@ -628,10 +718,27 @@ MISC_ARGS=(
   --actor-num-nodes "${ACTOR_NUM_NODES}"
   --actor-num-gpus-per-node "${ACTOR_NUM_GPUS_PER_NODE}"
   --rollout-num-gpus "${ROLLOUT_NUM_GPUS}"
-  --colocate
-  --offload-rollout
+  --train-memory-margin-bytes "${TRAIN_MEMORY_MARGIN_BYTES}"
   --megatron-to-hf-mode bridge
 )
+if is_true "${ENABLE_COLOCATE}"; then
+  MISC_ARGS+=(--colocate)
+fi
+if is_true "${ENABLE_OFFLOAD_ROLLOUT}"; then
+  MISC_ARGS+=(--offload-rollout)
+fi
+if is_true "${NO_ROPE_FUSION}"; then
+  MISC_ARGS+=(--no-rope-fusion)
+fi
+if is_true "${NO_PERSIST_LAYER_NORM}"; then
+  MISC_ARGS+=(--no-persist-layer-norm)
+fi
+if is_true "${NO_GRADIENT_ACCUMULATION_FUSION}"; then
+  MISC_ARGS+=(--no-gradient-accumulation-fusion)
+fi
+if is_true "${NO_MASKED_SOFTMAX_FUSION}"; then
+  MISC_ARGS+=(--no-masked-softmax-fusion)
+fi
 if [[ -n "${CRITIC_NUM_NODES}" ]]; then
   MISC_ARGS+=(--critic-num-nodes "${CRITIC_NUM_NODES}")
 fi
@@ -657,7 +764,7 @@ CUSTOM_ARGS=(
 )
 
 RUNTIME_ENV_JSON="$(cat <<EOF
-{"env_vars":{"PYTHONPATH":"${MEGATRON_DIR}:${SEARCH_R1_DIR}","CUDA_DEVICE_MAX_CONNECTIONS":"1","MASTER_ADDR":"127.0.0.1","SEARCH_R1_SEARCH_BACKEND":"${SEARCH_BACKEND}","SEARCH_R1_LOCAL_SEARCH_URL":"${LOCAL_SEARCH_URL}","SEARCH_R1_LOCAL_PROXY":"${LOCAL_SEARCH_PROXY}","SEARCH_R1_SERPER_API_KEY":"${SEARCH_R1_SERPER_API_KEY}","SEARCH_R1_RETURN_LOGPROB":"${SEARCH_RETURN_LOGPROB}","SEARCH_R1_SEARCH_CONCURRENCY":"${SEARCH_CONCURRENCY}","SEARCH_R1_MAX_TURNS":"${SEARCH_MAX_TURNS}","SEARCH_R1_TOPK":"${SEARCH_TOPK}","SEARCH_R1_GOOGLE_SNIPPET_ONLY":"${GOOGLE_SNIPPET_ONLY}","SEARCH_R1_GOOGLE_MIN_INTERVAL":"${GOOGLE_MIN_INTERVAL}","SEARCH_R1_GOOGLE_MAX_RETRIES":"${GOOGLE_MAX_RETRIES}","SEARCH_R1_GOOGLE_BACKOFF_BASE":"${GOOGLE_BACKOFF_BASE}","SEARCH_R1_GOOGLE_BACKOFF_CAP":"${GOOGLE_BACKOFF_CAP}","no_proxy":"127.0.0.1,localhost","NO_PROXY":"127.0.0.1,localhost","http_proxy":"http://127.0.0.1:7898","https_proxy":"http://127.0.0.1:7898","all_proxy":"http://127.0.0.1:7898"}}
+{"env_vars":{"PYTHONPATH":"${MEGATRON_DIR}:${SEARCH_R1_DIR}","CUDA_DEVICE_MAX_CONNECTIONS":"1","MASTER_ADDR":"127.0.0.1","CUDA_HOME":"${CUDA_HOME}","FLASHINFER_NVCC":"${CUDA_HOME}/bin/nvcc","PATH":"${PATH}","CPATH":"${CPATH}","CPLUS_INCLUDE_PATH":"${CPLUS_INCLUDE_PATH}","LD_LIBRARY_PATH":"${LD_LIBRARY_PATH:-}","SEARCH_R1_SEARCH_BACKEND":"${SEARCH_BACKEND}","SEARCH_R1_LOCAL_SEARCH_URL":"${LOCAL_SEARCH_URL}","SEARCH_R1_LOCAL_PROXY":"${LOCAL_SEARCH_PROXY}","SEARCH_R1_SERPER_API_KEY":"${SEARCH_R1_SERPER_API_KEY}","SEARCH_R1_RETURN_LOGPROB":"${SEARCH_RETURN_LOGPROB}","SEARCH_R1_SEARCH_CONCURRENCY":"${SEARCH_CONCURRENCY}","SEARCH_R1_MAX_TURNS":"${SEARCH_MAX_TURNS}","SEARCH_R1_TOPK":"${SEARCH_TOPK}","SEARCH_R1_GOOGLE_SNIPPET_ONLY":"${GOOGLE_SNIPPET_ONLY}","SEARCH_R1_GOOGLE_MIN_INTERVAL":"${GOOGLE_MIN_INTERVAL}","SEARCH_R1_GOOGLE_MAX_RETRIES":"${GOOGLE_MAX_RETRIES}","SEARCH_R1_GOOGLE_BACKOFF_BASE":"${GOOGLE_BACKOFF_BASE}","SEARCH_R1_GOOGLE_BACKOFF_CAP":"${GOOGLE_BACKOFF_CAP}","SLIME_DISABLE_PACKED_SEQ":"${SLIME_DISABLE_PACKED_SEQ}","no_proxy":"${no_proxy}","NO_PROXY":"${NO_PROXY}","http_proxy":"${http_proxy}","https_proxy":"${https_proxy}","all_proxy":"${all_proxy}"}}
 EOF
 )"
 

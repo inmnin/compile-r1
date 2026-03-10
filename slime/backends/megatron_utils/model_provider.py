@@ -2,6 +2,7 @@
 import argparse
 import inspect
 import re
+import warnings
 from contextlib import nullcontext
 from typing import Literal
 
@@ -54,6 +55,15 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def _has_transformer_engine_support() -> bool:
+    try:
+        from megatron.core.models.gpt import gpt_layer_specs as _gpt_layer_specs
+
+        return hasattr(_gpt_layer_specs, "TENorm")
+    except Exception:
+        return False
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -84,19 +94,26 @@ def get_model_provider_func(
         from megatron.bridge import AutoBridge
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-        provider = bridge.to_megatron_provider(load_weights=False)
-        # TODO: we should not manually set this...
-        provider.tensor_model_parallel_size = args.tensor_model_parallel_size
-        provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
-        provider.expert_model_parallel_size = args.expert_model_parallel_size
-        provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
-        provider.sequence_parallel = args.sequence_parallel
-        if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
-            provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
-        if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
-            provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
-        provider.finalize()
-        return provider.provide
+        if _has_transformer_engine_support() and hasattr(bridge, "to_megatron_provider"):
+            provider = bridge.to_megatron_provider(load_weights=False)
+            # TODO: we should not manually set this...
+            provider.tensor_model_parallel_size = args.tensor_model_parallel_size
+            provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
+            provider.expert_model_parallel_size = args.expert_model_parallel_size
+            provider.expert_tensor_parallel_size = args.expert_tensor_parallel_size
+            provider.sequence_parallel = args.sequence_parallel
+            if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+                provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
+            if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+                provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+            provider.finalize()
+            return provider.provide
+
+        warnings.warn(
+            "Bridge model provider is unavailable in the current environment; "
+            "falling back to native Megatron model provider.",
+            RuntimeWarning,
+        )
 
     def model_provider(pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None) -> GPTModel:
         """Builds the model.
@@ -111,7 +128,25 @@ def get_model_provider_func(
         Returns:
             Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
         """
-        use_te = args.transformer_impl == "transformer_engine"
+        use_te = args.transformer_impl == "transformer_engine" and _has_transformer_engine_support()
+        if args.transformer_impl == "transformer_engine" and not use_te:
+            warnings.warn(
+                "transformer_engine backend is not available; falling back to local transformer spec.",
+                RuntimeWarning,
+            )
+        if not use_te and getattr(args, "apply_rope_fusion", False):
+            warnings.warn(
+                "RoPE fusion requires transformer_engine kernels; disabling apply_rope_fusion.",
+                RuntimeWarning,
+            )
+            args.apply_rope_fusion = False
+        if not use_te and not getattr(args, "no_persist_layer_norm", False):
+            warnings.warn(
+                "Persistent layer norm requires transformer_engine kernels; disabling persist_layer_norm.",
+                RuntimeWarning,
+            )
+            args.no_persist_layer_norm = True
+            args.persist_layer_norm = False
 
         # Experimental loading arguments from yaml
         config: TransformerConfig = core_transformer_config_from_args(args)

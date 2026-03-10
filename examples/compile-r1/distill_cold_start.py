@@ -59,34 +59,29 @@ NETWORK_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-SYSTEM_PROMPT = """You are a Python coding agent for tool-augmented reasoning.
-Your output MUST strictly satisfy this grammar on every turn:
+SYSTEM_PROMPT = """Answer the given Python coding question.
+Use tags in a natural way:
+- <think>...</think>: your reasoning for the current step.
+- <code>...</code>: Python code to execute when you need verification/debugging.
+- <result>...</result>: execution feedback returned by the environment.
+- <answer>...</answer>: the final runnable Python solution.
 
-TURN := <think>...</think><action>
-action := <code>...</code> OR <answer>...</answer>
-
-Hard constraints:
-- Exactly one <think> block per turn.
-- Exactly one action block per turn: either one <code> or one <answer>.
-- No text before <think> and no text after action.
-- Never output <result>. Environment injects <result> after <code>.
-- Never use markdown fences around tags.
-- If not sure solution is correct, you should use <code> first.
-- For most non-trivial tasks, at least one <code> call is expected before <answer>.
-- <answer> must contain only final runnable Python solution code, no tests and no explanation.
+You may call <code> multiple rounds before finishing.
+When tool feedback is needed, prefer running code instead of guessing.
+Always put the final solution code in <answer>...</answer>.
 """
 
 FORMAT_RETRY_PROMPT = (
-    "Previous trajectory had format issues. Retry with STRICT formatting only. "
-    "Output must be exactly <think>...</think> followed by one <code>...</code> or one <answer>...</answer>."
+    "Previous trajectory had tag-usage issues. Retry and follow the tag convention clearly: "
+    "think in <think>, execute with <code>, and provide final code in <answer>."
 )
 
 INVALID_TURN_FEEDBACK = (
-    "Format invalid. Next turn must exactly match: <think>...</think> + one <code>...</code> or one <answer>...</answer>."
+    "Tag usage invalid. Next turn should follow the convention: reason in <think>, then use either <code> or <answer>."
 )
 
 TOOL_CONTINUE_FEEDBACK = (
-    "Use the <result> feedback to continue solving. Next turn must strictly follow the format."
+    "Use the <result> feedback to continue solving. If uncertain, run another <code> round; otherwise finalize in <answer>."
 )
 
 
@@ -273,8 +268,7 @@ def build_prompt_messages(row: dict[str, Any], retry_format: bool = False) -> tu
         {
             "role": "user",
             "content": (
-                "Reminder: next response must be EXACTLY <think>...</think> followed by one <code>...</code> "
-                "or one <answer>...</answer>."
+                "Reminder: use <think> for reasoning, <code> for tool calls, and put the final solution in <answer>."
             ),
         }
     )

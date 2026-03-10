@@ -3,11 +3,19 @@ import torch
 
 
 def convert_qwen2_to_hf(args, name, param):
-    if name == "module.module.embedding.word_embeddings.weight":
+    # Newer Megatron naming may omit/alter the legacy module prefix.
+    if name.startswith("module.module."):
+        normalized_name = name
+    elif name.startswith("module."):
+        normalized_name = f"module.{name}"
+    else:
+        normalized_name = f"module.module.{name}"
+
+    if normalized_name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
-    if name == "module.module.output_layer.weight":
+    if normalized_name == "module.module.output_layer.weight":
         return [("lm_head.weight", param)]
-    if name == "module.module.decoder.final_layernorm.weight":
+    if normalized_name == "module.module.decoder.final_layernorm.weight":
         return [("model.norm.weight", param)]
 
     try:
@@ -17,7 +25,7 @@ def convert_qwen2_to_hf(args, name, param):
     value_num_per_group = args.num_attention_heads // args.num_query_groups
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
-    match = re.match(decoder_layers_pattern, name)
+    match = re.match(decoder_layers_pattern, normalized_name)
     if match:
         layer_idx, rest = match.groups()
         if rest == "self_attention.linear_proj.weight":
@@ -57,9 +65,13 @@ def convert_qwen2_to_hf(args, name, param):
             ]
         elif rest == "mlp.linear_fc2.weight":
             return [(f"model.layers.{layer_idx}.mlp.down_proj.weight", param)]
-        elif rest == "self_attention.linear_qkv.layer_norm_weight":
+        elif rest in ("self_attention.linear_qkv.layer_norm_weight", "input_layernorm.weight"):
             return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
-        elif rest == "mlp.linear_fc1.layer_norm_weight":
+        elif rest in (
+            "mlp.linear_fc1.layer_norm_weight",
+            "post_attention_layernorm.weight",
+            "pre_mlp_layernorm.weight",
+        ):
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
 
         # qk norm
