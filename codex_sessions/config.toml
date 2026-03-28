@@ -1,0 +1,14 @@
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+approvals_reviewer = "user"
+[projects."/mnt/workspace/luofuwen"]
+trust_level = "trusted"
+
+[projects."/mnt/workspace/jkh"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+[notice.model_migrations]
+"gpt-5.3-codex" = "gpt-5.4"
