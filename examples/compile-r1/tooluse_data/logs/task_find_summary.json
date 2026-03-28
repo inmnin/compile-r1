@@ -1,0 +1,18 @@
+{
+  "normalized_counts": {
+    "tabmwp": 38431,
+    "finqa": 8281,
+    "tatqa": 16546,
+    "tabulargsm": 3404
+  },
+  "filtered_counts": {
+    "tabmwp_candidates": 7922,
+    "finqa_candidates": 5876,
+    "tatqa_candidates": 5762,
+    "eval_tabulargsm_hard": 797,
+    "eval_tabulargsm_robust": 1000
+  },
+  "notes": [
+    "MATH official repo clone does not contain raw train/test JSON locally; skipped optional migration normalization for now."
+  ]
+}

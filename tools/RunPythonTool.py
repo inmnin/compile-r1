@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import io
 import inspect
+import linecache
 import logging
 import multiprocessing
 import os
@@ -103,6 +104,63 @@ class _WallTimeLimitExceeded(Exception):
     pass
 
 
+def _build_error_details(exc: BaseException | None, tb_text: str, code_str: str) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "error_type": "",
+        "error_message": "",
+        "error_line": None,
+        "error_snippet": "",
+        "traceback": tb_text or "",
+    }
+    if exc is None:
+        return details
+
+    details["error_type"] = type(exc).__name__
+    details["error_message"] = str(exc)
+
+    if isinstance(exc, SyntaxError):
+        lineno = getattr(exc, "lineno", None)
+        if isinstance(lineno, int) and lineno > 0:
+            details["error_line"] = lineno
+            snippet = getattr(exc, "text", "") or ""
+            details["error_snippet"] = snippet.rstrip()
+        return details
+
+    tb = exc.__traceback__
+    preferred_tb = None
+    last_tb = None
+    while tb is not None:
+        last_tb = tb
+        frame_filename = getattr(tb.tb_frame.f_code, "co_filename", "")
+        if frame_filename == "<string>":
+            preferred_tb = tb
+        tb = tb.tb_next
+    target_tb = preferred_tb or last_tb
+    if target_tb is None:
+        return details
+
+    lineno = getattr(target_tb, "tb_lineno", None)
+    if isinstance(lineno, int) and lineno > 0:
+        details["error_line"] = lineno
+        code_lines = code_str.splitlines()
+        if lineno <= len(code_lines):
+            details["error_snippet"] = code_lines[lineno - 1].rstrip()
+        else:
+            cached = linecache.getline("<string>", lineno).rstrip()
+            if cached:
+                details["error_snippet"] = cached
+    return details
+
+
+def _with_error_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload.setdefault("error_type", "")
+    payload.setdefault("error_message", "")
+    payload.setdefault("error_line", None)
+    payload.setdefault("error_snippet", "")
+    payload.setdefault("traceback", "")
+    return payload
+
+
 def _sandbox_worker_task(code_str: str, wall_timeout: int, auto_invoke: bool) -> Dict[str, Any]:
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
@@ -111,6 +169,7 @@ def _sandbox_worker_task(code_str: str, wall_timeout: int, auto_invoke: bool) ->
     status = "success"
     result_value = None
     error_message = None
+    error_details = _with_error_fields({})
     function_executed = False
 
     old_handler = None
@@ -215,12 +274,26 @@ def _sandbox_worker_task(code_str: str, wall_timeout: int, auto_invoke: bool) ->
     except _WallTimeLimitExceeded as exc:
         status = "timeout"
         error_message = str(exc)
+        error_details = _with_error_fields(
+            {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+        )
     except SystemExit as exc:
         status = "error"
         error_message = f"Program exited with code: {exc.code}"
-    except Exception:
+        error_details = _with_error_fields(
+            {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+        )
+    except Exception as exc:
         status = "error"
-        error_message = traceback.format_exc()
+        tb_text = traceback.format_exc()
+        error_message = tb_text
+        error_details = _build_error_details(exc, tb_text=tb_text, code_str=code_str)
     finally:
         if old_handler is not None:
             signal.setitimer(signal.ITIMER_REAL, 0)
@@ -235,6 +308,7 @@ def _sandbox_worker_task(code_str: str, wall_timeout: int, auto_invoke: bool) ->
         "return_value": result_value,
         "stdout": output_logs.strip(),
         "error": error_message,
+        **error_details,
     }
 
 
@@ -331,7 +405,9 @@ class ToolSandbox:
         timeout_value = self.timeout if timeout is None else max(1, int(timeout))
         code = CodeExtractor.extract(raw_text) if extract_code else raw_text
         if not code.strip():
-            return {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+            return _with_error_fields(
+                {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+            )
 
         acquired = False
         started = time.perf_counter()
@@ -343,12 +419,12 @@ class ToolSandbox:
                 with self._metric_lock:
                     self._total_requests += 1
                     self._busy_requests += 1
-                return {
+                return _with_error_fields({
                     "status": "busy",
                     "error": "Server is overloaded. Request queue is full, please retry.",
                     "stdout": "",
                     "return_value": None,
-                }
+                })
 
             started = self._record_start()
             future = self._submit(code, timeout_value, auto_invoke)
@@ -362,24 +438,37 @@ class ToolSandbox:
                 future.cancel()
                 self._record_end(started, "timeout")
                 self._restart_pool("outer-timeout")
-                return {
+                return _with_error_fields({
                     "status": "timeout",
                     "error": f"Execution timed out ({timeout_value}s).",
                     "stdout": "",
                     "return_value": None,
-                }
+                    "error_type": "TimeoutError",
+                    "error_message": f"Execution timed out ({timeout_value}s).",
+                })
             except BrokenProcessPool:
                 self._record_end(started, "error")
                 self._restart_pool("broken-process-pool")
-                return {
+                return _with_error_fields({
                     "status": "system_error",
                     "error": "Process pool crashed and has been restarted. Please retry.",
                     "stdout": "",
                     "return_value": None,
-                }
+                    "error_type": "BrokenProcessPool",
+                    "error_message": "Process pool crashed and has been restarted. Please retry.",
+                })
             except Exception as exc:
                 self._record_end(started, "error")
-                return {"status": "system_error", "error": str(exc), "stdout": "", "return_value": None}
+                return _with_error_fields(
+                    {
+                        "status": "system_error",
+                        "error": str(exc),
+                        "stdout": "",
+                        "return_value": None,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
         finally:
             if acquired:
                 self._slots.release()
@@ -394,7 +483,9 @@ class ToolSandbox:
         timeout_value = self.timeout if timeout is None else max(1, int(timeout))
         code = CodeExtractor.extract(raw_text) if extract_code else raw_text
         if not code.strip():
-            return {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+            return _with_error_fields(
+                {"status": "error", "error": "No python code found.", "stdout": "", "return_value": None}
+            )
 
         started = self._record_start()
         future = None
@@ -409,24 +500,37 @@ class ToolSandbox:
                 future.cancel()
             self._record_end(started, "timeout")
             self._restart_pool("sync-timeout")
-            return {
+            return _with_error_fields({
                 "status": "timeout",
                 "error": f"Execution timed out ({timeout_value}s).",
                 "stdout": "",
                 "return_value": None,
-            }
+                "error_type": "TimeoutError",
+                "error_message": f"Execution timed out ({timeout_value}s).",
+            })
         except BrokenProcessPool:
             self._record_end(started, "error")
             self._restart_pool("broken-process-pool")
-            return {
+            return _with_error_fields({
                 "status": "system_error",
                 "error": "Process pool crashed and has been restarted. Please retry.",
                 "stdout": "",
                 "return_value": None,
-            }
+                "error_type": "BrokenProcessPool",
+                "error_message": "Process pool crashed and has been restarted. Please retry.",
+            })
         except Exception as exc:
             self._record_end(started, "error")
-            return {"status": "system_error", "error": str(exc), "stdout": "", "return_value": None}
+            return _with_error_fields(
+                {
+                    "status": "system_error",
+                    "error": str(exc),
+                    "stdout": "",
+                    "return_value": None,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+            )
 
     def stats(self) -> Dict[str, Any]:
         with self._metric_lock:
@@ -467,6 +571,10 @@ __slime_he_result = {{
     "status": "runtime_error",
     "error": "",
     "traceback": "",
+    "error_type": "",
+    "error_message": "",
+    "error_line": None,
+    "error_snippet": "",
     "used_prompt_prefix": {used_prompt_prefix},
 }}
 
@@ -486,6 +594,19 @@ try:
 except Exception as _exc:
     __slime_he_result["error"] = f"{{type(_exc).__name__}}: {{_exc}}"
     __slime_he_result["traceback"] = traceback.format_exc()
+    __slime_he_result["error_type"] = type(_exc).__name__
+    __slime_he_result["error_message"] = str(_exc)
+    _tb = _exc.__traceback__
+    while _tb is not None and _tb.tb_next is not None:
+        _tb = _tb.tb_next
+    if _tb is not None:
+        __slime_he_result["error_line"] = _tb.tb_lineno
+        try:
+            _code_lines = {repr(code)}.splitlines()
+            if 1 <= _tb.tb_lineno <= len(_code_lines):
+                __slime_he_result["error_snippet"] = _code_lines[_tb.tb_lineno - 1].rstrip()
+        except Exception:
+            pass
 
 result = __slime_he_result
 """
@@ -528,7 +649,7 @@ def run_humaneval_case(
     entry_point = str(entry_point or "")
 
     if not entry_point:
-        return {
+        return _with_error_fields({
             "passed": False,
             "status": "runtime_error",
             "error": "entry_point is empty",
@@ -536,7 +657,7 @@ def run_humaneval_case(
             "stdout": "",
             "stderr": "",
             "used_prompt_prefix": False,
-        }
+        })
 
     sandbox = _get_cached_sandbox(max_workers=max_workers, timeout=timeout)
     program, used_prompt_prefix = _build_humaneval_program(
@@ -547,7 +668,7 @@ def run_humaneval_case(
     )
 
     tool_result = sandbox.run(program, extract_code=False, timeout=timeout, auto_invoke=False)
-    normalized: Dict[str, Any] = {
+    normalized: Dict[str, Any] = _with_error_fields({
         "passed": False,
         "status": "runtime_error",
         "error": "",
@@ -555,16 +676,26 @@ def run_humaneval_case(
         "stdout": tool_result.get("stdout", "") or "",
         "stderr": "",
         "used_prompt_prefix": used_prompt_prefix,
-    }
+    })
 
     status = str(tool_result.get("status", ""))
     if status == "timeout":
         normalized["status"] = "timeout"
         normalized["error"] = tool_result.get("error", "") or f"Execution timed out ({timeout}s)."
+        normalized["error_type"] = tool_result.get("error_type", "") or normalized.get("error_type", "")
+        normalized["error_message"] = tool_result.get("error_message", "") or normalized.get("error_message", "")
+        normalized["error_line"] = tool_result.get("error_line")
+        normalized["error_snippet"] = tool_result.get("error_snippet", "") or normalized.get("error_snippet", "")
+        normalized["traceback"] = tool_result.get("traceback", "") or normalized.get("traceback", "")
         return normalized
     if status in ("error", "system_error", "busy"):
         normalized["status"] = "runtime_error"
         normalized["error"] = tool_result.get("error", "") or "Sandbox execution failed."
+        normalized["error_type"] = tool_result.get("error_type", "") or normalized.get("error_type", "")
+        normalized["error_message"] = tool_result.get("error_message", "") or normalized.get("error_message", "")
+        normalized["error_line"] = tool_result.get("error_line")
+        normalized["error_snippet"] = tool_result.get("error_snippet", "") or normalized.get("error_snippet", "")
+        normalized["traceback"] = tool_result.get("traceback", "") or normalized.get("traceback", "")
         return normalized
 
     rv = tool_result.get("return_value")
@@ -572,6 +703,7 @@ def run_humaneval_case(
         normalized.update(rv)
         normalized["stdout"] = tool_result.get("stdout", "") or normalized.get("stdout", "")
         normalized.setdefault("stderr", "")
+        _with_error_fields(normalized)
         return normalized
 
     normalized["status"] = "runtime_error"
@@ -594,6 +726,11 @@ class RunResponse(BaseModel):
     return_value: Optional[Any] = None
     stdout: str = ""
     error: Optional[str] = None
+    error_type: str = ""
+    error_message: str = ""
+    error_line: Optional[int] = None
+    error_snippet: str = ""
+    traceback: str = ""
 
 
 class HumanEvalRequest(BaseModel):
@@ -603,6 +740,133 @@ class HumanEvalRequest(BaseModel):
     entry_point: str
     timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=180)
     max_workers: int = Field(default=DEFAULT_POOL_WORKERS, ge=1, le=256)
+
+
+class RunTestsRequest(BaseModel):
+    code: str
+    tests: list[str]
+    timeout: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1, le=180)
+    max_workers: int = Field(default=DEFAULT_POOL_WORKERS, ge=1, le=256)
+
+
+def _build_run_tests_program(code: str, tests: list[str]) -> str:
+    test_list_literal = repr([str(t) for t in tests if str(t).strip()])
+    harness = f"""
+import traceback
+
+__slime_tests = {test_list_literal}
+__slime_test_result = {{
+    "passed_all": False,
+    "passed_count": 0,
+    "total_count": len(__slime_tests),
+    "status": "runtime_error",
+    "error": "",
+    "traceback": "",
+    "error_type": "",
+    "error_message": "",
+    "error_line": None,
+    "error_snippet": "",
+    "failed_test_index": None,
+}}
+
+try:
+    for __slime_idx, __slime_case in enumerate(__slime_tests):
+        exec(__slime_case, globals(), globals())
+        __slime_test_result["passed_count"] += 1
+    __slime_test_result["passed_all"] = True
+    __slime_test_result["status"] = "passed"
+except Exception as _exc:
+    __slime_test_result["failed_test_index"] = __slime_idx if "__slime_idx" in globals() else None
+    __slime_test_result["error"] = f"{{type(_exc).__name__}}: {{_exc}}"
+    __slime_test_result["traceback"] = traceback.format_exc()
+    __slime_test_result["error_type"] = type(_exc).__name__
+    __slime_test_result["error_message"] = str(_exc)
+    _tb = _exc.__traceback__
+    while _tb is not None and _tb.tb_next is not None:
+        _tb = _tb.tb_next
+    if _tb is not None:
+        __slime_test_result["error_line"] = _tb.tb_lineno
+        try:
+            _code_lines = {repr(code)}.splitlines()
+            if 1 <= _tb.tb_lineno <= len(_code_lines):
+                __slime_test_result["error_snippet"] = _code_lines[_tb.tb_lineno - 1].rstrip()
+        except Exception:
+            pass
+    __slime_test_result["status"] = "failed"
+
+result = __slime_test_result
+"""
+    return f"{code}\n\n{harness}"
+
+
+def run_python_tests(
+    code: str,
+    tests: list[str],
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    max_workers: int = DEFAULT_POOL_WORKERS,
+) -> Dict[str, Any]:
+    code = CodeExtractor.extract(str(code))
+    normalized_tests = [str(t).strip() for t in tests if str(t).strip()]
+    if not code.strip():
+        return _with_error_fields({
+            "passed_all": False,
+            "passed_count": 0,
+            "total_count": len(normalized_tests),
+            "status": "runtime_error",
+            "error": "candidate code is empty",
+            "traceback": "",
+            "stdout": "",
+            "stderr": "",
+            "failed_test_index": None,
+        })
+
+    sandbox = _get_cached_sandbox(max_workers=max_workers, timeout=timeout)
+    program = _build_run_tests_program(code=code, tests=normalized_tests)
+    tool_result = sandbox.run(program, extract_code=False, timeout=timeout, auto_invoke=False)
+
+    normalized: Dict[str, Any] = _with_error_fields({
+        "passed_all": False,
+        "passed_count": 0,
+        "total_count": len(normalized_tests),
+        "status": "runtime_error",
+        "error": "",
+        "traceback": "",
+        "stdout": tool_result.get("stdout", "") or "",
+        "stderr": "",
+        "failed_test_index": None,
+    })
+
+    status = str(tool_result.get("status", ""))
+    if status == "timeout":
+        normalized["status"] = "timeout"
+        normalized["error"] = tool_result.get("error", "") or f"Execution timed out ({timeout}s)."
+        normalized["error_type"] = tool_result.get("error_type", "") or normalized.get("error_type", "")
+        normalized["error_message"] = tool_result.get("error_message", "") or normalized.get("error_message", "")
+        normalized["error_line"] = tool_result.get("error_line")
+        normalized["error_snippet"] = tool_result.get("error_snippet", "") or normalized.get("error_snippet", "")
+        normalized["traceback"] = tool_result.get("traceback", "") or normalized.get("traceback", "")
+        return normalized
+    if status in ("error", "system_error", "busy"):
+        normalized["status"] = "runtime_error"
+        normalized["error"] = tool_result.get("error", "") or "Sandbox execution failed."
+        normalized["error_type"] = tool_result.get("error_type", "") or normalized.get("error_type", "")
+        normalized["error_message"] = tool_result.get("error_message", "") or normalized.get("error_message", "")
+        normalized["error_line"] = tool_result.get("error_line")
+        normalized["error_snippet"] = tool_result.get("error_snippet", "") or normalized.get("error_snippet", "")
+        normalized["traceback"] = tool_result.get("traceback", "") or normalized.get("traceback", "")
+        return normalized
+
+    rv = tool_result.get("return_value")
+    if isinstance(rv, dict) and "passed_all" in rv:
+        normalized.update(rv)
+        normalized["stdout"] = tool_result.get("stdout", "") or normalized.get("stdout", "")
+        normalized.setdefault("stderr", "")
+        _with_error_fields(normalized)
+        return normalized
+
+    normalized["status"] = "runtime_error"
+    normalized["error"] = "run_tests harness did not produce expected result payload."
+    return normalized
 
 
 MAX_WORKERS = _env_int("RUNPY_MAX_WORKERS", DEFAULT_POOL_WORKERS)
@@ -671,6 +935,18 @@ async def run_humaneval_api(request: HumanEvalRequest) -> Dict[str, Any]:
     return result
 
 
+@app.post("/run_tests")
+async def run_tests_api(request: RunTestsRequest) -> Dict[str, Any]:
+    result = await asyncio.to_thread(
+        run_python_tests,
+        code=request.code,
+        tests=request.tests,
+        timeout=request.timeout,
+        max_workers=request.max_workers,
+    )
+    return result
+
+
 def main() -> None:
     host = os.getenv("RUNPY_HOST", "0.0.0.0")
     port = _env_int("RUNPY_PORT", 18080)
@@ -692,5 +968,6 @@ __all__ = [
     "CodeExtractor",
     "ToolSandbox",
     "run_humaneval_case",
+    "run_python_tests",
     "app",
 ]

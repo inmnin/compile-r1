@@ -196,3 +196,5 @@ _examples_synced/
 # Local large artifacts
 examples/search-r1/train_log/
 examples/compile-r1/data/
+examples/compile-r1/train_log/
+examples/compile-r1/tooluse_data/external/

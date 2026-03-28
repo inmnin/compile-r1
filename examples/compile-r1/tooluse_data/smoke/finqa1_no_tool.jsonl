@@ -1,0 +1,1 @@
+{"id": "finqa__ADI/2009/page_49.pdf-1", "dataset": "finqa", "split": "train", "pred_no_tool": "$3.8 million", "ok_no_tool": false, "judge_no_tool": {"type": "exact", "gold": "380", "pred": "$3.8 million", "gold_norm": "380", "pred_norm": "$3.8 million", "dataset": "finqa"}}
